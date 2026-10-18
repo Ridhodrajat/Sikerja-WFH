@@ -1,14 +1,11 @@
-const SPREADSHEET_ID = ""; // Isi jika script standalone. Kosongkan jika bound ke Spreadsheet.
+const SPREADSHEET_ID = "1WvufYa4Yr8JB53cs6uMIP8fQH0ccDGhziYuQYGEYUa8"; // ID Spreadsheet database SIKERJA WFH.
 const SHEET_PEGAWAI = "MasterPegawai";
 const SHEET_MAGANG = "MasterMagang";
 const SHEET_PRESENSI = "PresensiWFH";
 const APP_TIMEZONE = "Asia/Makassar";
+const DEFAULT_LOGO_URL = "https://kemenimipas.go.id/images/logo/Kementerian-Hukum-Dan-Ham-Kemenkumham-Logo-Vector.png";
 
 // ======================= ADMIN LOGIN =======================
-// PIN admin disimpan di Script Properties, bukan di file HTML.
-// Cara set:
-// Apps Script > Project Settings > Script Properties
-// Tambahkan property: ADMIN_PIN  dengan value PIN pilihan Anda.
 function verifikasiAdmin(pin) {
   try {
     const savedPin = PropertiesService.getScriptProperties().getProperty("ADMIN_PIN");
@@ -35,32 +32,32 @@ function verifikasiAdmin(pin) {
 }
 
 function getSpreadsheet() {
-  if (SPREADSHEET_ID && String(SPREADSHEET_ID).trim() !== "") {
-    return SpreadsheetApp.openById(String(SPREADSHEET_ID).trim());
+  try {
+    if (SPREADSHEET_ID && String(SPREADSHEET_ID).trim() !== "") {
+      return SpreadsheetApp.openById(String(SPREADSHEET_ID).trim());
+    }
+
+    const savedId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+    if (savedId && String(savedId).trim() !== "") {
+      return SpreadsheetApp.openById(String(savedId).trim());
+    }
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    if (ss) return ss;
+
+    const newSs = SpreadsheetApp.create("SIKERJA WFH - Database Kehadiran");
+    PropertiesService.getScriptProperties().setProperty("SPREADSHEET_ID", newSs.getId());
+    return newSs;
+  } catch (error) {
+    throw new Error("Spreadsheet tidak dapat diakses. Periksa apakah ID benar dan Anda memiliki akses: " + error.message);
   }
-
-  // Coba ambil dari Script Properties jika SPREADSHEET_ID di file kosong
-  const savedId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
-  if (savedId && String(savedId).trim() !== "") {
-    return SpreadsheetApp.openById(String(savedId).trim());
-  }
-
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (ss) return ss;
-
-  // Jika standalone dan SPREADSHEET_ID belum ada, buat Otomatis Google Sheets baru
-  const newSs = SpreadsheetApp.create("SIKERJA WFH - Database Kehadiran");
-  PropertiesService.getScriptProperties().setProperty("SPREADSHEET_ID", newSs.getId());
-  return newSs;
 }
 
 function doGet() {
-  // Index.html tidak memakai scriptlet <?= ?> apa pun, jadi tidak perlu lewat
-  // createTemplateFromFile().evaluate(). Untuk HTML berukuran besar, jalur evaluate()
-  // pernah memicu bug Apps Script sendiri saat mem-bundle halaman ("Failed to execute
-  // 'write' on 'Document': Unexpected identifier ..."). createHtmlOutputFromFile()
-  // mengirim HTML apa adanya tanpa melalui mesin templating itu, jadi lebih aman.
-  return HtmlService.createHtmlOutputFromFile("Index").setTitle("SIKERJA WFH - Kanwil Ditjenpas Kalimantan Selatan").addMetaTag("viewport", "width=device-width, initial-scale=1.0").setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  return HtmlService.createHtmlOutputFromFile("Index")
+    .setTitle("SIKERJA WFH - Kanwil Ditjenpas Kalimantan Selatan")
+    .addMetaTag("viewport", "width=device-width, initial-scale=1.0")
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 function setupDatabase() {
@@ -83,7 +80,6 @@ function setupDatabase() {
       .setValues([["ID", "Nama Lengkap", "NIM", "Instansi", "Posisi", "Status"]])
       .setFontWeight("bold");
   } else {
-    // Menyamakan header versi lama tanpa menghapus data.
     const headers = shMagang.getRange(1, 1, 1, Math.max(6, shMagang.getLastColumn())).getDisplayValues()[0];
     if (headers[3] === "Golongan") shMagang.getRange(1, 4).setValue("Instansi");
     if (headers[4] === "Jabatan") shMagang.getRange(1, 5).setValue("Posisi");
@@ -98,7 +94,6 @@ function setupDatabase() {
       .setFontWeight("bold");
   }
 
-  // Format hanya area yang dipakai agar proses tidak lambat.
   const pegRows = Math.max(shPegawai.getLastRow(), 2);
   const magRows = Math.max(shMagang.getLastRow(), 2);
   const preRows = Math.max(shPresensi.getLastRow(), 2);
@@ -115,14 +110,6 @@ function getInitialData() {
 
     const pegawai = readPegawai_(ss.getSheetByName(SHEET_PEGAWAI));
     const magang = readMagang_(ss.getSheetByName(SHEET_MAGANG));
-
-    // PENTING: JANGAN kirim seluruh riwayat PresensiWFH di sini. Sheet ini terus bertambah
-    // setiap hari (bisa ratusan/ribuan baris seiring waktu), dan mengirim semuanya lewat
-    // google.script.run pernah memicu bug internal Apps Script saat mem-bundle respons ke
-    // browser ("Failed to execute 'write' on 'Document': Unexpected identifier ...") begitu
-    // ukurannya melewati ambang batas tertentu. Halaman utama hanya butuh data HARI INI
-    // (statistik, dropdown presensi, tabel admin); riwayat/rekap tanggal lain diambil
-    // on-demand lewat getRekapData() saat tab Rekap benar-benar dipakai.
     const presensiHariIni = readPresensi_(ss.getSheetByName(SHEET_PRESENSI)).filter((p) => p.tanggal === todayStr);
 
     return {
@@ -139,7 +126,6 @@ function getInitialData() {
   }
 }
 
-// Alias untuk kompatibilitas dengan HTML versi lama.
 function getAppData() {
   return getInitialData();
 }
@@ -154,7 +140,6 @@ function simpanPresensi(formData) {
       throw new Error("Data presensi tidak lengkap. Silakan pilih nama terlebih dahulu.");
     }
 
-    // Cuti dan Dinas Luar hanya boleh dicatat melalui menu Admin.
     const requestedStatus = String(formData.statusKehadiran || "").trim();
     if (requestedStatus === "Cuti" || requestedStatus === "Dinas Luar") {
       throw new Error("Status Cuti dan Dinas Luar hanya dapat ditandai oleh Admin.");
@@ -166,21 +151,17 @@ function simpanPresensi(formData) {
     const timestampStr = formatDate_(now, "yyyy-MM-dd HH:mm:ss");
     const tanggalStr = formatDate_(now, "yyyy-MM-dd");
 
-    let fotoUrl = "";
-    if (formData.fotoBase64) {
-      fotoUrl = saveImageToDrive(formData.fotoBase64, formData.namaLengkap, tanggalStr);
-    }
-
-    // Satu user hanya satu presensi per hari (tidak boleh mengisi ulang).
-    // Dicocokkan lewat Tanggal + Kategori + ID_User -- Kategori wajib ikut dibandingkan
-    // karena ID Pegawai dan ID Magang penomorannya terpisah (masing-masing mulai dari 1),
-    // jadi ID yang sama persis bisa dipakai orang berbeda di kategori yang berbeda.
     const values = sheet.getDataRange().getDisplayValues();
     const idUserNorm = normalizeId_(formData.idUser);
     const kategoriNorm = String(formData.kategori || "").trim();
+    const nipNimNorm = String(formData.nipNim || "").trim();
     let rowToUpdate = -1;
     for (let i = 1; i < values.length; i++) {
-      if (String(values[i][1]).trim() === tanggalStr && String(values[i][2]).trim() === kategoriNorm && normalizeId_(values[i][3]) === idUserNorm) {
+      const sameDate = String(values[i][1]).trim() === tanggalStr;
+      const sameKat = String(values[i][2]).trim() === kategoriNorm;
+      const sameId = normalizeId_(values[i][3]) === idUserNorm;
+      const sameNip = nipNimNorm !== "" && String(values[i][5]).trim() === nipNimNorm;
+      if (sameDate && sameKat && (sameId || sameNip)) {
         rowToUpdate = i + 1;
         break;
       }
@@ -188,13 +169,33 @@ function simpanPresensi(formData) {
 
     if (rowToUpdate > 0) {
       const statusSebelumnya = String(values[rowToUpdate - 1][8] || "").trim();
-      throw new Error(statusSebelumnya ? "Anda sudah tercatat presensi hari ini (" + statusSebelumnya + "). Presensi hanya dapat dilakukan satu kali per hari." : "Anda sudah tercatat presensi hari ini. Presensi hanya dapat dilakukan satu kali per hari.");
+      throw new Error(
+        statusSebelumnya
+          ? "Anda sudah tercatat presensi hari ini (" + statusSebelumnya + "). Presensi hanya dapat dilakukan satu kali per hari."
+          : "Anda sudah tercatat presensi hari ini. Presensi hanya dapat dilakukan satu kali per hari."
+      );
     }
 
-    const rowData = [timestampStr, tanggalStr, String(formData.kategori || "").trim(), idUserNorm, String(formData.namaLengkap || "").trim(), String(formData.nipNim || "").trim(), String(formData.golongan || "").trim(), String(formData.jabatan || "").trim(), String(formData.statusKehadiran || "").trim(), String(formData.uraianKegiatan || "").trim(), fotoUrl];
+    let fotoUrl = "";
+    if (formData.fotoBase64) {
+      fotoUrl = saveImageToDrive(formData.fotoBase64, formData.namaLengkap, tanggalStr);
+    }
+
+    const rowData = [
+      timestampStr,
+      tanggalStr,
+      kategoriNorm,
+      idUserNorm,
+      String(formData.namaLengkap || "").trim(),
+      nipNimNorm,
+      String(formData.golongan || "").trim(),
+      String(formData.jabatan || "").trim(),
+      requestedStatus,
+      String(formData.uraianKegiatan || "").trim(),
+      fotoUrl,
+    ];
 
     sheet.appendRow(rowData);
-
     SpreadsheetApp.flush();
     return { success: true, data: getInitialData() };
   } catch (error) {
@@ -221,22 +222,16 @@ function saveImageToDrive(base64Data, namaUser, tanggal) {
     const folder = getOrCreateFolder_("SIKERJA_WFH_FOTO");
     const file = folder.createFile(blob);
 
-    // Jika kebijakan Workspace melarang ANYONE_WITH_LINK, file tetap tersimpan dan URL tetap dikembalikan.
     try {
       file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     } catch (_) {}
 
-    // file.getUrl() ("/file/d/ID/view") hanya berupa halaman viewer Drive, BUKAN URL gambar
-    // langsung, sehingga gagal dipakai sebagai <img src> di halaman web (tampak putus/alt text
-    // saja). Format "uc?export=view&id=" di bawah ini yang bisa dirender langsung sebagai gambar.
     return "https://drive.google.com/uc?export=view&id=" + file.getId();
   } catch (error) {
     throw new Error("Gagal menyimpan foto: " + (error.message || String(error)));
   }
 }
 
-// Folder khusus agar file tidak tercecer di root Drive. Dipakai bersama untuk foto
-// dokumentasi maupun berkas PDF hasil rekap.
 function getOrCreateFolder_(folderName) {
   const folders = DriveApp.getFoldersByName(folderName);
   return folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
@@ -357,8 +352,6 @@ function setStatusAdminCepat(userId, status) {
     const shPresensi = ss.getSheetByName(SHEET_PRESENSI);
     if (!shPegawai || !shPresensi) throw new Error("Sheet database belum lengkap.");
 
-    // Cari 1 pegawai langsung dari kolom ID. Dibandingkan lewat normalizeId_ (bukan
-    // TextFinder literal) supaya ID lama yang terformat angka (mis. "14" vs "14.0") tetap cocok.
     const pegLastRow = shPegawai.getLastRow();
     if (pegLastRow < 2) throw new Error("Master pegawai kosong.");
 
@@ -380,7 +373,6 @@ function setStatusAdminCepat(userId, status) {
     const timestampStr = formatDate_(now, "yyyy-MM-dd HH:mm:ss");
     const waktuStr = formatDate_(now, "HH:mm:ss");
 
-    // Cari hanya baris milik user ini di kolom ID_User, lalu cocokkan tanggal.
     let existingRow = -1;
     let existingStatus = "";
     const lastRow = shPresensi.getLastRow();
@@ -389,10 +381,10 @@ function setStatusAdminCepat(userId, status) {
       const presValues = shPresensi.getRange(2, 1, lastRow - 1, 11).getDisplayValues();
       for (let i = 0; i < presValues.length; i++) {
         const row = presValues[i];
-        const tanggal = String(row[1]).trim(); // col B
-        const kategori = String(row[2]).trim(); // col C
-        const uid = normalizeId_(row[3]); // col D
-        const st = String(row[8]).trim(); // col I
+        const tanggal = String(row[1]).trim();
+        const kategori = String(row[2]).trim();
+        const uid = normalizeId_(row[3]);
+        const st = String(row[8]).trim();
         if (tanggal === tanggalStr && kategori === "Pegawai" && uid === userId) {
           existingRow = i + 2;
           existingStatus = st;
@@ -401,7 +393,6 @@ function setStatusAdminCepat(userId, status) {
       }
     }
 
-    // Jangan timpa orang yang sudah mengisi Hadir WFH sendiri.
     if (existingRow > 0 && existingStatus === "Hadir WFH") {
       throw new Error("Pegawai ini sudah mengisi presensi WFH dan tidak dapat ditandai Cuti/Dinas Luar.");
     }
@@ -470,7 +461,6 @@ function simpanStatusAdmin(statusRows) {
     const lastRow = Math.max(shPresensi.getLastRow(), 1);
     const existing = lastRow >= 2 ? shPresensi.getRange(2, 1, lastRow - 1, 11).getDisplayValues() : [];
 
-    // Map pilihan admin dari browser.
     const selectedById = {};
     statusRows.forEach((item) => {
       const id = normalizeId_(item && item.idUser);
@@ -483,7 +473,6 @@ function simpanStatusAdmin(statusRows) {
     const rowsToClear = [];
     const existingTodayIds = new Set();
 
-    // Proses baris yang sudah ada tanpa getRange berulang-ulang.
     existing.forEach((row, idx) => {
       const tanggal = String(row[1] || "").trim();
       const kategori = String(row[2] || "").trim();
@@ -493,7 +482,6 @@ function simpanStatusAdmin(statusRows) {
       if (tanggal !== tanggalStr || kategori !== "Pegawai" || !userId) return;
       existingTodayIds.add(userId);
 
-      // Jangan pernah menimpa Hadir WFH yang diisi pegawai sendiri.
       if (existingStatus === "Hadir WFH") return;
 
       if (!Object.prototype.hasOwnProperty.call(selectedById, userId)) return;
@@ -502,7 +490,6 @@ function simpanStatusAdmin(statusRows) {
       const sheetRow = idx + 2;
 
       if (!newStatus) {
-        // Hanya hapus baris status yang dibuat admin.
         if (existingStatus === "Cuti" || existingStatus === "Dinas Luar") {
           rowsToClear.push(sheetRow);
         }
@@ -518,7 +505,6 @@ function simpanStatusAdmin(statusRows) {
       });
     });
 
-    // Tambahkan pilihan baru yang belum punya baris hari ini.
     const rowsToAppend = [];
     Object.keys(selectedById).forEach((userId) => {
       const status = selectedById[userId];
@@ -529,12 +515,10 @@ function simpanStatusAdmin(statusRows) {
       rowsToAppend.push([timestampStr, tanggalStr, "Pegawai", p.id, p.nama, p.nip, p.golongan, p.jabatan, status, status === "Cuti" ? "Cuti - ditandai oleh Admin" : "Dinas Luar - ditandai oleh Admin", ""]);
     });
 
-    // Tulis perubahan. Biasanya hanya 1-5 pegawai sehingga sangat cepat.
     rowsToWrite.forEach((item) => {
       shPresensi.getRange(item.row, 1, 1, 11).setValues(item.values);
     });
 
-    // Kosongkan baris yang status adminnya dibatalkan.
     rowsToClear.forEach((rowNum) => {
       shPresensi.getRange(rowNum, 1, 1, 11).clearContent();
     });
@@ -546,8 +530,6 @@ function simpanStatusAdmin(statusRows) {
 
     SpreadsheetApp.flush();
 
-    // Kembalikan data tanpa menjalankan setupDatabase lagi.
-    // Sama seperti getInitialData(): jangan kirim seluruh riwayat presensi, cukup hari ini.
     const presensiHariIni = readPresensi_(shPresensi).filter((p) => p.tanggal === tanggalStr);
     const magang = readMagang_(ss.getSheetByName(SHEET_MAGANG));
 
@@ -596,10 +578,9 @@ function getRekapData(filter) {
 }
 
 // ================= REKAP LAPORAN RESMI (GOOGLE DOCS & PDF) =================
-// payload dikirim dari client (openRekapGoogleDocs()/openRekapPDF() di index.html), sudah
-// berisi data harian yang difilter & diurutkan (urutPegawaiRekap: Kepala Kantor Wilayah lalu
-// pangkat/golongan tertinggi ke terendah). Struktur dokumen mengikuti format contoh resmi
-// "LAPORAN PELAKSANAAN WORK FROM HOME (WFH) DI LINGKUNGAN KANTOR WILAYAH DITJENPAS KALSEL".
+
+const FONT_DOKUMEN = "Arial";
+const SPASI_BARIS_ISI_SURAT = 1.5;
 
 function buatRekapGoogleDocs(payload) {
   let hasil;
@@ -629,7 +610,6 @@ function buatRekapPDF(payload) {
       pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
     } catch (_) {}
 
-    // Dokumen Google Docs sementara hanya alat bantu ekspor, tidak perlu disimpan.
     try {
       docFile.setTrashed(true);
     } catch (_) {}
@@ -646,26 +626,21 @@ function namaFileRekap_(payload) {
   return "Laporan WFH Kanwil Ditjenpas Kalsel " + tgl;
 }
 
-// Menyusun isi dokumen (dipakai bersama oleh jalur Google Docs maupun PDF) lalu menutupnya
-// (saveAndClose) agar aman diekspor/dibagikan. Mengembalikan id & url yang sudah di-cache
-// karena beberapa method Document tidak bisa dipanggil lagi setelah ditutup.
 function buatDokumenRekap_(payload) {
-  if (!payload || !payload.tanggal) throw new Error("Data rekap tidak valid. Pilih tanggal/bulan lalu klik Tampilkan Rekap terlebih dahulu.");
+  if (!payload || !payload.tanggal) throw new Error("Data rekap tidak valid. Pilih tanggal terlebih dahulu.");
 
   const doc = DocumentApp.create(namaFileRekap_(payload));
   const body = doc.getBody();
   body.clear();
 
-  // Ukuran halaman A4 (595.3 x 841.9 pt) PORTRAIT (Potret) sesuai instruksi prompt
+  // Ukuran A4 Portrait (595.3 x 841.9 pt) -> Lebar efektif konten = 595.3 - 56.65 - 56.65 = 482 pt
   body.setPageWidth(595.3).setPageHeight(841.9);
-  body.setMarginTop(42.5).setMarginBottom(70.85).setMarginLeft(56.65).setMarginRight(56.65);
+  body.setMarginTop(42.5).setMarginBottom(56.65).setMarginLeft(56.65).setMarginRight(56.65);
 
   const tanggalLengkap = String(payload.tanggalLengkap || payload.tanggal);
   const tanggalBiasa = String(payload.tanggalBiasa || payload.tanggal);
-  // Dikirim client sudah dalam format "JUM'AT, 4 September 2026" (hanya nama hari huruf
-  // besar, sisanya huruf biasa) -- fallback ke uppercase penuh kalau payload lama/tidak
-  // mengirim field ini (mis. dari klien yang belum diperbarui).
-  const tanggalJudul = String(payload.tanggalJudul || tanggalLengkap.toUpperCase());
+  const tanggalJudul = String(payload.tanggalJudul || tanggalLengkap);
+  const tanggalDokumentasi = String(payload.tanggalDokumentasi || tanggalBiasa.toUpperCase());
   const jumlahPegawai = Number(payload.jumlahPegawai || 0);
   const jumlahWFH = Number(payload.jumlahWFH || 0);
   const jumlahCuti = Number(payload.jumlahCuti || 0);
@@ -673,94 +648,136 @@ function buatDokumenRekap_(payload) {
   const jumlahMagang = Number(payload.jumlahMagang || 0);
   const pegawaiCuti = Array.isArray(payload.pegawaiCuti) ? payload.pegawaiCuti : [];
   const pegawaiDinasLuar = Array.isArray(payload.pegawaiDinasLuar) ? payload.pegawaiDinasLuar : [];
-  // Tabel Dokumentasi Kegiatan HANYA berisi pegawai Hadir WFH -- Cuti dan Dinas Luar tidak
-  // melaksanakan kegiatan WFH untuk didokumentasikan (tidak ada foto/uraian kegiatan), jadi
-  // mereka cukup disebutkan di ringkasan "B. PELAKSANAAN KEGIATAN" (baris "Pegawai Cuti"/
-  // "Pegawai Dinas Luar" di tambahTabelKeterangan_ di atas), TIDAK digabung ke tabel ini.
   const pegawaiWFH = Array.isArray(payload.pegawaiWFH) ? payload.pegawaiWFH : [];
   const magang = Array.isArray(payload.magang) ? payload.magang : [];
   const kakanwil = payload.kakanwil || {};
 
-  // ---------- KOP SURAT (samakan dengan letterhead di #printableArea / contoh laporan) ----------
+  // ---------- KOP SURAT ----------
   tambahKopSurat_(body, payload.logoDataUri);
-  // body.clear() di atas menyisakan 1 paragraf kosong bawaan (lihat catatan di
-  // hapusParagrafKosongAwal_) yang sekarang jadi child pertama SEBELUM tabel kop surat --
-  // dihapus di sini setelah kop surat (child kedua) ada, supaya dokumen tidak dimulai
-  // dengan baris kosong.
   hapusParagrafKosongAwal_(body);
 
-  // ---------- JUDUL ----------
-  // Diperkecil dari 12pt ke 11pt (masih sama dengan ukuran isi surat) supaya judul 4 baris
-  // ini muat rapi di kop tanpa terasa kebesaran, sesuai laporan balik user.
+  // ---------- JUDUL LAPORAN ----------
   tambahParagrafTengah_(body, "LAPORAN PELAKSANAAN WORK FROM HOME (WFH)", true, 11);
   tambahParagrafTengah_(body, "DI LINGKUNGAN KANTOR WILAYAH DIREKTORAT JENDERAL", true, 11);
   tambahParagrafTengah_(body, "PEMASYARAKATAN KALIMANTAN SELATAN", true, 11);
-  tambahParagrafTengah_(body, tanggalJudul, true, 11);
-  body.appendParagraph("");
+  const pTanggalJudul = tambahParagrafTengah_(body, tanggalJudul, true, 11);
+  pTanggalJudul.setSpacingAfter(10);
 
   // ---------- A. PENDAHULUAN ----------
   tambahJudulBagianHuruf_(body, "A", "PENDAHULUAN");
-  tambahSubJudulNomor_(body, "1", "Umum");
-  tambahParagrafIsi_(body, "Menindaklanjuti Surat Edaran Menteri Imigrasi dan Pemasyarakatan Nomor 2 Tahun 2026 tentang Pelaksanaan Tugas Kedinasan bagi Pegawai Aparatur Sipil Negara melalui Penerapan Work From Home dalam rangka mendukung percepatan transformasi tata kelola penyelenggaraan pemerintahan di lingkungan Kementerian Imigrasi dan Pemasyarakatan, serta Surat Sekretaris Direktorat Jenderal Pemasyarakatan Nomor PAS.1-SA.08.05-1410 tanggal 08 April 2026 tentang penyampaian pelaksanaan Work From Home (WFH), perlu dilakukan tindak lanjut pelaksanaan di lingkungan Kantor Wilayah dan Unit Pelaksana Teknis Pemasyarakatan.");
-  tambahSubJudulNomor_(body, "2", "Dasar Pelaksanaan");
-  tambahListNomor_(body, ["Surat Edaran Menteri Imigrasi dan Pemasyarakatan Nomor 2 Tahun 2026 tentang Pelaksanaan Tugas Kedinasan bagi Pegawai Aparatur Sipil Negara melalui Penerapan Work From Home dalam rangka mendukung percepatan transformasi tata kelola penyelenggaraan pemerintahan.", "Surat Sekretaris Direktorat Jenderal Pemasyarakatan Nomor PAS.1-SA.08.05-1410 tanggal 08 April 2026 tentang Penyampaian Pelaksanaan Work From Home (WFH) di lingkungan Direktorat Jenderal Pemasyarakatan."]);
+  tambahSubJudulNomor_(body, "1", "Umum", 18);
+  tambahParagrafIsi_(
+    body,
+    "Menindaklanjuti Surat Edaran Menteri Imigrasi dan Pemasyarakatan Nomor 2 Tahun 2026 tentang Pelaksanaan Tugas Kedinasan bagi Pegawai Aparatur Sipil Negara melalui Penerapan Work From Home dalam rangka mendukung percepatan transformasi tata kelola penyelenggaraan pemerintahan di lingkungan Kementerian Imigrasi dan Pemasyarakatan, serta Surat Sekretaris Direktorat Jenderal Pemasyarakatan Nomor PAS.1-SA.08.05-1410 tanggal 08 April 2026 tentang penyampaian pelaksanaan Work From Home (WFH), perlu dilakukan tindak lanjut pelaksanaan di lingkungan Kantor Wilayah dan Unit Pelaksana Teknis Pemasyarakatan.",
+    18,
+    18
+  );
+  tambahSubJudulNomor_(body, "2", "Dasar Pelaksanaan", 18);
+  tambahListNomor_(
+    body,
+    [
+      "Surat Edaran Menteri Imigrasi dan Pemasyarakatan Nomor 2 Tahun 2026 tentang Pelaksanaan Tugas Kedinasan bagi Pegawai Aparatur Sipil Negara melalui Penerapan Work From Home dalam rangka mendukung percepatan transformasi tata kelola penyelenggaraan pemerintahan.",
+      "Surat Sekretaris Direktorat Jenderal Pemasyarakatan Nomor PAS.1-SA.08.05-1410 tanggal 08 April 2026 tentang Penyampaian Pelaksanaan Work From Home (WFH) di lingkungan Direktorat Jenderal Pemasyarakatan.",
+    ],
+    18
+  );
 
   // ---------- B. PELAKSANAAN KEGIATAN ----------
   tambahJudulBagianHuruf_(body, "B", "PELAKSANAAN KEGIATAN");
-  tambahParagrafIsi_(body, "Pelaksanaan Work From Home (WFH) di lingkungan Kantor Wilayah Direktorat Jenderal Pemasyarakatan Kalimantan Selatan dilaksanakan pada:");
+  const pPengantarB = tambahParagrafIsi_(
+    body,
+    "Pelaksanaan Work From Home (WFH) di lingkungan Kantor Wilayah Direktorat Jenderal Pemasyarakatan Kalimantan Selatan dilaksanakan pada:",
+    18,
+    18
+  );
+  pPengantarB.setSpacingAfter(4);
 
-  const jumlahPegawaiKet = jumlahPegawai + " orang (" + jumlahWFH + " WFH" + (jumlahCuti ? ", " + jumlahCuti + " Cuti" : "") + (jumlahDinasLuar ? ", " + jumlahDinasLuar + " Dinas Luar" : "") + ")";
+  const jumlahPegawaiKet =
+    jumlahPegawai +
+    " orang (" +
+    jumlahWFH +
+    " WFH" +
+    (jumlahCuti ? ", " + jumlahCuti + " Cuti" : "") +
+    (jumlahDinasLuar ? ", " + jumlahDinasLuar + " Dinas Luar" : "") +
+    ")";
   const barisKeterangan = [
-    ["Hari/Tanggal", tanggalLengkap],
-    ["Jumlah Pegawai", jumlahPegawaiKet],
+    ["Hari/Tanggal", ": " + tanggalLengkap],
+    ["Jumlah Pegawai", ": " + jumlahPegawaiKet],
   ];
-  if (jumlahMagang > 0) barisKeterangan.push(["Jumlah peserta magang", jumlahMagang + " orang"]);
-  // Nilai berupa array (bukan string) dirender sebagai daftar bernomor 1./2./dst oleh
-  // tambahTabelKeterangan_ (satu nama per baris), bukan digabung koma dalam satu baris
-  // panjang -- dan BUKAN dikosongkan lalu ditambah daftar terpisah setelah tabel seperti
-  // sebelumnya (tampak seperti nama "nyasar" di luar tabel keterangan).
-  barisKeterangan.push(["Pegawai Cuti", pegawaiCuti.length ? pegawaiCuti : "Tidak ada"]);
-  barisKeterangan.push(["Pegawai Dinas Luar", pegawaiDinasLuar.length ? pegawaiDinasLuar : "Tidak ada"]);
-  tambahTabelKeterangan_(body, barisKeterangan);
+  if (jumlahMagang > 0) barisKeterangan.push(["Jumlah peserta magang", ": " + jumlahMagang + " orang"]);
+  barisKeterangan.push(["Pegawai Cuti", pegawaiCuti.length ? pegawaiCuti : ": Tidak ada"]);
+  barisKeterangan.push(["Pegawai Dinas Luar", pegawaiDinasLuar.length ? pegawaiDinasLuar : ": Tidak ada"]);
+  tambahTabelKeterangan_(body, barisKeterangan, 18);
 
-  body.appendParagraph("");
-  tambahParagrafIsi_(body, "Adapun pelaksanaannya sebagai berikut:");
-  tambahListNomor_(body, ["WFH dilaksanakan pada " + tanggalLengkap + ".", "Seluruh Pegawai ASN Kanwil yang melaksanakan fungsi dukungan manajemen bekerja secara fleksibel dari lokasi masing-masing.", "Pegawai melakukan presensi secara daring melalui aplikasi STAR-ASN.", "Pegawai menyampaikan laporan harian kegiatan kepada atasan langsung.", "Koordinasi dan komunikasi kedinasan dilakukan melalui media daring.", "Pengawasan dan pemantauan capaian kinerja dilakukan oleh atasan langsung."]);
+  body.appendPageBreak();
 
-  // ---------- C. HASIL YANG DI CAPAI ----------
-  tambahJudulBagianHuruf_(body, "C", "HASIL YANG DI CAPAI");
-  tambahListHuruf_(body, ["Pelaksanaan WFH berjalan tertib dan lancar.", "Presensi pegawai tercatat melalui sistem daring.", "Laporan harian kegiatan tersampaikan dengan baik.", "Tugas dan fungsi Kanwil tetap berjalan efektif tanpa kendala yang berarti."]);
+  const pAdapun = tambahParagrafIsi_(body, "Adapun pelaksanaannya sebagai berikut:", 0, 0);
+  pAdapun.setSpacingBefore(6);
+  tambahListNomor_(
+    body,
+    [
+      "WFH dilaksanakan pada " + tanggalLengkap + ".",
+      "Seluruh Pegawai ASN Kanwil yang melaksanakan fungsi dukungan manajemen bekerja secara fleksibel dari lokasi masing-masing.",
+      "Pegawai melakukan presensi secara daring melalui aplikasi STAR-ASN.",
+      "Pegawai menyampaikan laporan harian kegiatan kepada atasan langsung.",
+      "Koordinasi dan komunikasi kedinasan dilakukan melalui media daring.",
+      "Pengawasan dan pemantauan capaian kinerja dilakukan oleh atasan langsung.",
+    ],
+    0
+  );
+
+  // ---------- C. HASIL YANG DICAPAI ----------
+  tambahJudulBagianHuruf_(body, "C", "HASIL YANG DICAPAI");
+  tambahListHuruf_(
+    body,
+    [
+      "Pelaksanaan WFH berjalan tertib dan lancar.",
+      "Presensi pegawai tercatat melalui sistem daring.",
+      "Laporan harian kegiatan tersampaikan dengan baik.",
+      "Tugas dan fungsi Kanwil tetap berjalan efektif tanpa kendala yang berarti.",
+    ],
+    0
+  );
 
   // ---------- D. SIMPULAN ----------
   tambahJudulBagianHuruf_(body, "D", "SIMPULAN");
-  tambahParagrafIsi_(body, "Pelaksanaan penyesuaian tugas kedinasan melalui Work From Home (WFH) di lingkungan Kantor Wilayah Direktorat Jenderal Pemasyarakatan Kalimantan Selatan pada " + tanggalBiasa + " telah dilaksanakan sesuai ketentuan dan berjalan dengan baik serta tetap menjamin ketercapaian kinerja organisasi.");
+  tambahParagrafIsi_(
+    body,
+    "Pelaksanaan penyesuaian tugas kedinasan melalui Work From Home (WFH) di lingkungan Kantor Wilayah Direktorat Jenderal Pemasyarakatan Kalimantan Selatan pada " +
+      tanggalBiasa +
+      " telah dilaksanakan sesuai ketentuan dan berjalan dengan baik serta tetap menjamin ketercapaian kinerja organisasi.",
+    0,
+    28
+  );
 
   // ---------- E. PENUTUP ----------
   tambahJudulBagianHuruf_(body, "E", "PENUTUP");
-  tambahParagrafIsi_(body, "Demikian laporan pelaksanaan penyesuaian tugas kedinasan melalui Work From Home (WFH) ini disusun sebagai bentuk pertanggungjawaban dan dokumentasi pelaksanaan kebijakan pimpinan di lingkungan Kantor Wilayah Direktorat Jenderal Pemasyarakatan Kalimantan Selatan.");
+  const pPenutup = tambahParagrafIsi_(
+    body,
+    "Demikian laporan pelaksanaan penyesuaian tugas kedinasan melalui Work From Home (WFH) ini disusun sebagai bentuk pertanggungjawaban dan dokumentasi pelaksanaan kebijakan pimpinan di lingkungan Kantor Wilayah Direktorat Jenderal Pemasyarakatan Kalimantan Selatan.",
+    0,
+    28
+  );
+  pPenutup.setSpacingAfter(14);
 
   // ---------- TANDA TANGAN PEJABAT ----------
-  // Menggunakan tabel 2 kolom tanpa border agar letak "Banjarmasin, ...", nama pejabat, dan NIP
-  // rata kiri terhadap kolomnya sendiri di sebelah kanan (sejajar vertikal), tidak tergeser
-  // oleh indentasi manual atau alignment paragraph semata.
-  body.appendParagraph("");
   const tableTtd = body.appendTable();
   tableTtd.setBorderWidth(0);
   const rowTtd = tableTtd.appendTableRow();
-  
-  // Kolom kiri kosong (pemisah / penyeimbang)
+
   const cellKiri = rowTtd.appendTableCell("");
-  cellKiri.setWidth(260);
-  
-  // Kolom kanan berisi detail TTD Kakanwil
+  cellKiri.setWidth(250);
+  cellKiri.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+
   const cellKanan = rowTtd.appendTableCell("");
-  cellKanan.setWidth(220);
+  cellKanan.setWidth(232);
+  cellKanan.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
   cellKanan.clear();
-  
+
   const rapikanTtd_ = (p, bold, underline) => {
-    p.setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+    p.setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1.15);
     p.setAlignment(DocumentApp.HorizontalAlignment.LEFT);
-    p.editAsText().setBold(bold).setUnderline(underline).setFontSize(11);
+    p.editAsText().setFontFamily(FONT_DOKUMEN).setBold(bold).setUnderline(underline).setFontSize(11);
     return p;
   };
 
@@ -769,55 +786,39 @@ function buatDokumenRekap_(payload) {
   rapikanTtd_(cellKanan.appendParagraph(""), false, false);
   rapikanTtd_(cellKanan.appendParagraph(""), false, false);
   rapikanTtd_(cellKanan.appendParagraph(""), false, false);
-  rapikanTtd_(cellKanan.appendParagraph(String(kakanwil.nama || "-")), true, true);
+  rapikanTtd_(cellKanan.appendParagraph(""), false, false);
+  rapikanTtd_(cellKanan.appendParagraph(""), false, false);
+  rapikanTtd_(cellKanan.appendParagraph(String(kakanwil.nama || "-")), false, false);
   rapikanTtd_(cellKanan.appendParagraph("NIP. " + String(kakanwil.nip || "-")), false, false);
   hapusParagrafKosongAwal_(cellKanan);
 
   // ---------- DOKUMENTASI KEGIATAN: PEGAWAI ----------
-  // Heading dokumentasi di contoh laporan resmi TIDAK dibesarkan (tetap 11pt bold, sama
-  // dengan judul bagian A/B/C/D/E) -- jangan dinaikkan lagi ke 12-13pt seperti sebelumnya.
-  body.appendPageBreak();
   tambahParagrafTengah_(body, "DOKUMENTASI KEGIATAN", true, 11);
-  tambahParagrafTengah_(body, "WFH PADA " + String(tanggalBiasa).toUpperCase(), true, 11);
-  body.appendParagraph("");
+  const pSubDokPeg = tambahParagrafTengah_(body, "WFH PADA " + tanggalDokumentasi, true, 11);
+  pSubDokPeg.setSpacingAfter(8);
   tambahTabelDokumentasi_(body, pegawaiWFH, "pegawai");
 
   // ---------- DOKUMENTASI KEGIATAN: MAGANG ----------
   if (magang.length) {
-    body.appendPageBreak();
     tambahParagrafTengah_(body, "DOKUMENTASI KEGIATAN", true, 11);
-    tambahParagrafTengah_(body, "WFH PESERTA MAGANG PADA " + String(tanggalBiasa).toUpperCase(), true, 11);
-    body.appendParagraph("");
+    const pSubDokMag = tambahParagrafTengah_(body, "WFH PESERTA MAGANG PADA " + tanggalDokumentasi, true, 11);
+    pSubDokMag.setSpacingAfter(8);
     tambahTabelDokumentasi_(body, magang, "magang");
   }
 
   doc.saveAndClose();
-  // Kalau blok tanda tangan kepanjangan/tidak cukup di sisa halaman, dorong utuh ke halaman
-  // berikutnya (bukan terpotong nama di satu halaman, NIP-nya di halaman lain) -- lihat
-  // jagaTandaTanganTetapUtuh_() untuk kenapa ini butuh Google Docs API, bukan DocumentApp.
+
+  sesuaikanOrientasiDanFotoDokumentasi_(doc.getId());
   jagaTandaTanganTetapUtuh_(doc.getId(), "Banjarmasin, " + tanggalBiasa);
   return { id: doc.getId(), url: doc.getUrl() };
 }
 
-// DocumentApp (dipakai di seluruh buatDokumenRekap_ di atas) TIDAK punya API "keep
-// together"/"keep with next" -- sudah dicek ke referensi resmi Apps Script, Class Paragraph
-// tidak mengekspos method seperti itu. Fitur ini HANYA tersedia lewat Google Docs API
-// (advanced service terpisah, request updateParagraphStyle dengan field keepWithNext), jadi
-// dipanggil di sini setelah dokumen dasarnya selesai dibangun DocumentApp & disimpan.
-//
-// PENTING -- WAJIB diaktifkan manual sekali di Apps Script sebelum ini bisa jalan:
-// Extensions/Editor Apps Script > ikon "+" di samping "Services" > cari "Google Docs API" >
-// Tambahkan. Kalau belum diaktifkan (atau gagal karena sebab lain), fungsi ini gagal SENYAP
-// (try/catch) -- dokumen tetap jadi seperti biasa, cuma tanpa jaminan blok tanda tangan utuh
-// (perilaku lama: bisa saja terpotong 2 halaman kalau kebetulan pas di batas halaman).
 function jagaTandaTanganTetapUtuh_(docId, teksBanjarmasin) {
   try {
+    if (typeof Docs === "undefined" || !Docs.Documents) return;
     const dokumen = Docs.Documents.get(docId);
     const content = (dokumen.body && dokumen.body.content) || [];
 
-    // Kumpulkan SEMUA paragraf (top-level maupun di dalam sel tabel) karena blok tanda tangan
-    // sekarang berada di dalam tabel 2 kolom. Setiap elemen menyimpan startIndex/endIndex dan
-    // nomor urutnya agar blok tanda tangan bisa dijaga utuh.
     const paragraf = [];
     const kumpulkan_ = (elements) => {
       (elements || []).forEach((el) => {
@@ -836,8 +837,6 @@ function jagaTandaTanganTetapUtuh_(docId, teksBanjarmasin) {
     };
     kumpulkan_(content);
 
-    // Cari paragraf "Banjarmasin, <tanggal laporan>" sebagai penanda -- isinya unik (memuat
-    // tanggal laporan spesifik), tidak mungkin kebetulan sama dengan teks lain di dokumen.
     let idxAnchor = -1;
     for (let i = 0; i < paragraf.length; i++) {
       if (paragraf[i].teks === teksBanjarmasin) {
@@ -845,12 +844,10 @@ function jagaTandaTanganTetapUtuh_(docId, teksBanjarmasin) {
         break;
       }
     }
-    if (idxAnchor < 0) return; // Anchor tidak ketemu (struktur berubah?) -- jangan paksa apa-apa.
+    if (idxAnchor < 0) return;
 
-    // Blok yang dijaga tetap utuh: paragraf "Banjarmasin, ..." sampai paragraf NIP (anchor+6:
-    // "Kepala Kantor Wilayah," + 3 baris kosong + nama + NIP).
     const idxMulai = idxAnchor;
-    const idxAkhir = Math.min(paragraf.length - 1, idxAnchor + 6);
+    const idxAkhir = Math.min(paragraf.length - 1, idxAnchor + 8);
     const elMulai = paragraf[idxMulai];
     const elAkhir = paragraf[idxAkhir];
 
@@ -866,24 +863,107 @@ function jagaTandaTanganTetapUtuh_(docId, teksBanjarmasin) {
           },
         ],
       },
-      docId,
+      docId
     );
   } catch (error) {
-    console.error("Gagal menjaga blok tanda tangan tetap utuh (Docs API belum aktif?): " + (error.message || error));
+    console.error("Gagal menjaga blok tanda tangan: " + (error.message || error));
   }
 }
 
-// PENYEBAB "jarak Enter"/baris kosong nyasar sebelum konten di sel tabel (kop surat, tabel
-// keterangan, tabel dokumentasi): TableCell (juga Body) di DocumentApp SELALU punya minimal
-// 1 paragraf; appendTableCell("") membuat cell dengan 1 paragraf KOSONG, dan .clear() TIDAK
-// benar-benar menghilangkan paragraf itu -- ia cuma mengosongkan isinya, paragrafnya sendiri
-// tetap ada. Jadi pola umum `cell.clear(); cell.appendParagraph(teks);` menghasilkan 2
-// paragraf (satu kosong duluan, baru isinya), yang tampak sebagai baris kosong SEBELUM
-// konten sebenarnya -- persis pola yang dikeluhkan user (gap selalu 1x di awal tiap sel,
-// tidak pernah di antara baris-baris berikutnya). Helper ini menghapus paragraf kosong sisa
-// itu SETELAH konten sungguhan ditambahkan (dipanggil di akhir tiap fungsi yang memakai pola
-// clear()+append di atas) -- container tidak boleh dibiarkan 0 child sama sekali, makanya
-// baru dihapus setelah ada child lain untuk menggantikannya.
+function sesuaikanOrientasiDanFotoDokumentasi_(docId) {
+  try {
+    if (typeof Docs === "undefined" || !Docs.Documents) {
+      return;
+    }
+
+    const dokumen = Docs.Documents.get(docId);
+    const content = (dokumen.body && dokumen.body.content) || [];
+
+    const posisiHeading = [];
+    const kumpulkanParagraf_ = (elements) => {
+      (elements || []).forEach((el) => {
+        if (el.paragraph) {
+          const teks = (el.paragraph.elements || [])
+            .map((e) => (e.textRun && e.textRun.content) || "")
+            .join("")
+            .trim();
+          if (teks === "DOKUMENTASI KEGIATAN") {
+            posisiHeading.push({ startIndex: el.startIndex, endIndex: el.endIndex });
+          }
+        } else if (el.table) {
+          (el.table.tableRows || []).forEach((row) => {
+            (row.tableCells || []).forEach((cell) => kumpulkanParagraf_(cell.content));
+          });
+        }
+      });
+    };
+    kumpulkanParagraf_(content);
+
+    if (!posisiHeading.length) return;
+
+    const requestsBreak = [];
+    [...posisiHeading].reverse().forEach((h) => {
+      requestsBreak.push({
+        insertSectionBreak: {
+          location: { index: h.startIndex },
+          sectionType: "NEXT_PAGE",
+        },
+      });
+    });
+
+    Docs.Documents.batchUpdate({ requests: requestsBreak }, docId);
+
+    const dokumen2 = Docs.Documents.get(docId);
+    const content2 = (dokumen2.body && dokumen2.body.content) || [];
+
+    const posisiHeading2 = [];
+    const cariHeading_ = (elements) => {
+      (elements || []).forEach((el) => {
+        if (el.paragraph) {
+          const teks = (el.paragraph.elements || [])
+            .map((e) => (e.textRun && e.textRun.content) || "")
+            .join("")
+            .trim();
+          if (teks === "DOKUMENTASI KEGIATAN") {
+            posisiHeading2.push({ startIndex: el.startIndex, endIndex: el.endIndex });
+          }
+        } else if (el.table) {
+          (el.table.tableRows || []).forEach((row) => {
+            (row.tableCells || []).forEach((cell) => cariHeading_(cell.content));
+          });
+        }
+      });
+    };
+    cariHeading_(content2);
+
+    const sectionStyleLandscape = {
+      flipPageOrientation: true,
+      marginTop: { magnitude: 42.5, unit: "PT" },
+      marginBottom: { magnitude: 42.5, unit: "PT" },
+      marginLeft: { magnitude: 56.65, unit: "PT" },
+      marginRight: { magnitude: 56.65, unit: "PT" },
+    };
+
+    const requestsStyle = [];
+
+    posisiHeading2.forEach((h) => {
+      requestsStyle.push({
+        updateSectionStyle: {
+          range: { startIndex: h.startIndex, endIndex: h.endIndex },
+          sectionStyle: sectionStyleLandscape,
+          fields: "flipPageOrientation,marginTop,marginBottom,marginLeft,marginRight",
+        },
+      });
+    });
+
+    if (requestsStyle.length > 0) {
+      Docs.Documents.batchUpdate({ requests: requestsStyle }, docId);
+    }
+  } catch (error) {
+    console.error("Gagal Docs API: " + (error.message || error));
+  }
+}
+
 function hapusParagrafKosongAwal_(cell) {
   try {
     if (cell.getNumChildren() > 1) {
@@ -895,54 +975,70 @@ function hapusParagrafKosongAwal_(cell) {
   } catch (_) {}
 }
 
-// Meniru letterhead di #printableArea (index.html): logo di kiri, nama instansi & alamat/
-// kontak rata TENGAH di kolom teksnya sendiri (bukan rata kiri) -- kolom teks mengisi sisa
-// lebar baris (2 kolom: logo, teks; tanpa kolom spacer kanan terpisah), lalu teks di dalamnya
-// di-center relatif terhadap kolom itu.
 function tambahKopSurat_(body, logoDataUri) {
+  // REVISI HEADER RATA TENGAH PRESISI:
+  // Lebar konten A4 Portrait = 482 pt.
+  // Kolom Logo (78 pt) + Kolom Teks Tengah (354 pt) + Kolom Penyeimbang Kanan (50 pt) = 482 pt,
+  // dengan indentasi paragraf dikunci 0 sehingga teks alamat/jalan berada persis di tengah.
   const table = body.appendTable();
   table.setBorderWidth(0);
   const tr = table.appendTableRow();
 
   const cellLogo = tr.appendTableCell("");
-  cellLogo.setWidth(90);
+  cellLogo.setWidth(78);
+  cellLogo.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+  cellLogo.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
   cellLogo.clear();
-  if (logoDataUri) sisipkanLogoKeSel_(cellLogo, logoDataUri);
+  sisipkanLogoKeSel_(cellLogo, logoDataUri);
   hapusParagrafKosongAwal_(cellLogo);
+  if (cellLogo.getNumChildren() > 0 && cellLogo.getChild(0).getType() === DocumentApp.ElementType.PARAGRAPH) {
+    cellLogo.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER).setIndentStart(0).setIndentFirstLine(0);
+  }
 
   const cellTeks = tr.appendTableCell("");
+  cellTeks.setWidth(374);
+  cellTeks.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+  cellTeks.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
   cellTeks.clear();
-  // Hanya nama unit eselon I (baris terakhir) yang tebal & lebih besar -- dua baris nama
-  // kementerian/direktorat di atasnya huruf biasa, sesuai kop surat resmi.
-  [
-    ["KEMENTERIAN IMIGRASI DAN PEMASYARAKATAN REPUBLIK INDONESIA", false, 10],
-    ["DIREKTORAT JENDERAL PEMASYARAKATAN", false, 10],
-    ["KANTOR WILAYAH KALIMANTAN SELATAN", true, 12],
-  ].forEach(([teks, bold, size]) => {
+
+  const tambahBarisKop_ = (teks, bold, size, spaceBefore = 0) => {
     const p = cellTeks.appendParagraph(teks);
     p.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
-    p.editAsText().setBold(bold).setUnderline(false).setFontSize(size);
-    // Baris-baris kop surat harus rapat, bukan jarak default Google Docs (~10pt after).
-    p.setSpacingAfter(0);
-  });
-  // Alamat & kontak digabung jadi 1 baris (sebelumnya 2 baris terpisah) supaya kop 1 baris
-  // lebih ringkas sebelum garis horizontal.
-  const pAlamat = cellTeks.appendParagraph("Jalan Jenderal A. Yani Km. 5,5 No. 24, Banjarmasin, Kalimantan Selatan   Telepon 085252502005   Pos-el: kanwilditjenpaskalsel@gmail.com");
-  pAlamat.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
-  pAlamat.editAsText().setBold(false).setUnderline(false).setFontSize(7.5);
-  pAlamat.setSpacingAfter(0);
+    p.setIndentStart(0).setIndentFirstLine(0).setIndentEnd(0);
+    p.setLineSpacing(1.05).setSpacingBefore(spaceBefore).setSpacingAfter(0);
+    p.editAsText().setFontFamily(FONT_DOKUMEN).setBold(bold).setUnderline(false).setFontSize(size);
+    return p;
+  };
+
+  tambahBarisKop_("KEMENTERIAN IMIGRASI DAN PEMASYARAKATAN REPUBLIK INDONESIA", false, 9.5, 0);
+  tambahBarisKop_("DIREKTORAT JENDERAL PEMASYARAKATAN", false, 9.5, 0);
+  tambahBarisKop_("KANTOR WILAYAH KALIMANTAN SELATAN", true, 11.5, 0);
+
+  // Baris alamat jalan & baris telepon/email dipisah menjadi 2 paragraf CENTER mandiri agar benar-benar simetris
+  tambahBarisKop_("Jalan Jenderal A. Yani Km. 5,5 No. 24, Banjarmasin, Kalimantan Selatan", false, 8, 2);
+
+  const pKontak = tambahBarisKop_("Telepon 085252502005   Pos-el: kanwilditjenpaskalsel@gmail.com", false, 8, 0);
+  const textKontak = pKontak.editAsText();
+  const emailStr = "kanwilditjenpaskalsel@gmail.com";
+  const pText = pKontak.getText();
+  const emailIdx = pText.indexOf(emailStr);
+  if (emailIdx !== -1) {
+    textKontak.setForegroundColor(emailIdx, emailIdx + emailStr.length - 1, "#0000FF");
+    textKontak.setItalic(emailIdx, emailIdx + emailStr.length - 1, true);
+  }
+
   hapusParagrafKosongAwal_(cellTeks);
+
+  // Kolom ke-3 sebagai penyeimbang kanan agar titik tengah teks kop sejajar dengan judul di bawahnya
+  const cellKanan = tr.appendTableCell("");
+  cellKanan.setWidth(30);
+  cellKanan.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
+  cellKanan.clear();
+  hapusParagrafKosongAwal_(cellKanan);
 
   const hr = body.appendHorizontalRule();
   const pGaris = hr.getParent().asParagraph();
-  pGaris.setSpacingBefore(0).setSpacingAfter(0);
-  // Apps Script (bukan Google Docs pada umumnya) punya kuirk: appendTable() bisa menyisakan
-  // paragraf kosong tambahan tepat setelah tabel, TERPISAH dari paragraf yang baru dibuat
-  // appendHorizontalRule() di atas untuk menampung garisnya -- percobaan pertama (cek child
-  // terakhir SEBELUM appendHorizontalRule()) ternyata salah target (masih kena tabelnya
-  // sendiri), garis tetap kelihatan berjarak. Diperbaiki dengan menyapu MUNDUR dari paragraf
-  // garis: hapus semua paragraf kosong yang nyangkut tepat sebelum paragraf garis (berhenti
-  // otomatis begitu ketemu tabel kop, karena tabel bukan ElementType.PARAGRAPH).
+  pGaris.setSpacingBefore(2).setSpacingAfter(8);
   let idx = body.getChildIndex(pGaris) - 1;
   while (idx >= 0) {
     const anak = body.getChild(idx);
@@ -958,72 +1054,61 @@ function tambahKopSurat_(body, logoDataUri) {
 function tambahParagrafTengah_(body, text, bold, size) {
   const p = body.appendParagraph(text);
   p.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+  p.setIndentStart(0).setIndentFirstLine(0).setIndentEnd(0);
   p.editAsText()
+    .setFontFamily(FONT_DOKUMEN)
     .setBold(!!bold)
     .setUnderline(false)
     .setFontSize(size || 11);
-  // Spasi tunggal, tanpa jarak ekstra setelah paragraf -- sesuai contoh (`w:line="240"`,
-  // `w:after="0"`) untuk judul laporan & heading "DOKUMENTASI KEGIATAN"/"WFH PADA ...".
-  p.setLineSpacing(1).setSpacingAfter(0);
+  p.setLineSpacing(1.15).setSpacingBefore(0).setSpacingAfter(0);
   return p;
 }
 
-// Jarak baris (line spacing) 1,5 dipakai di seluruh isi surat (judul bagian, sub-judul,
-// paragraf isi, list) -- diukur langsung dari `w:line="360"` (360/240 = 1,5) di XML contoh
-// laporan resmi (datasets/*.docx), BUKAN 1 (default DocumentApp) atau 2 (spasi ganda).
-// Bagian di luar isi surat (judul laporan, tanda tangan, heading "DOKUMENTASI KEGIATAN")
-// sengaja TIDAK dipakaikan ini karena di contoh mereka memakai `w:line="240"` (spasi tunggal).
-const SPASI_BARIS_ISI_SURAT = 1.5;
-
-// Judul bagian utama bersurat: "A. PENDAHULUAN", "B. PELAKSANAAN KEGIATAN", dst,
-// mengikuti penomoran huruf pada #printableArea & contoh laporan resmi.
 function tambahJudulBagianHuruf_(body, huruf, text) {
-  body.appendParagraph("");
   const p = body.appendParagraph(huruf + ". " + text);
-  p.editAsText().setBold(true).setUnderline(false);
-  p.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingAfter(0);
+  p.editAsText().setFontFamily(FONT_DOKUMEN).setBold(true).setUnderline(false).setFontSize(11);
+  p.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingBefore(10).setSpacingAfter(2);
   return p;
 }
 
-// Sub-judul bernomor di dalam satu bagian, mis. "1. Umum" / "2. Dasar Pelaksanaan".
-function tambahSubJudulNomor_(body, nomor, text) {
+function tambahSubJudulNomor_(body, nomor, text, leftIndent = 0) {
   const p = body.appendParagraph(nomor + ". " + text);
-  p.editAsText().setBold(true).setUnderline(false);
-  p.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingAfter(0);
+  if (leftIndent > 0) {
+    p.setIndentStart(leftIndent);
+    p.setIndentFirstLine(leftIndent);
+  }
+
+  p.editAsText().setFontFamily(FONT_DOKUMEN).setBold(true).setUnderline(false).setFontSize(11);
+  p.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingBefore(2).setSpacingAfter(0);
   return p;
 }
 
-// Semua teks isi (paragraf biasa, item list, sel tabel) HARUS ditegaskan bold(false) dan
-// underline(false) secara eksplisit di sini, jangan mengandalkan "default" DocumentApp --
-// pernah kejadian gaya bold dari heading sebelumnya, dan gaya underline dari blok tanda
-// tangan (nama Kakanwil pakai .setUnderline(true)), ikut terbawa ke teks isi berikutnya
-// kalau tidak ditegaskan ulang.
-function tambahParagrafIsi_(body, text) {
+function tambahParagrafIsi_(body, text, leftIndent = 0, firstLineIndent = 0) {
   const p = body.appendParagraph(text);
-  p.editAsText().setBold(false).setUnderline(false);
-  // Rata kanan-kiri (justify) supaya sisi kanan paragraf rapi sejajar seperti surat resmi --
-  // sebelumnya default DocumentApp adalah rata kiri saja (LEFT), sisi kanan bergerigi.
+
+  if (leftIndent > 0) {
+    p.setIndentStart(leftIndent);
+  }
+  if (firstLineIndent > 0) {
+    p.setIndentFirstLine(leftIndent + firstLineIndent);
+  } else if (firstLineIndent === 0 && leftIndent > 0) {
+    p.setIndentFirstLine(leftIndent);
+  }
+
+  p.editAsText().setFontFamily(FONT_DOKUMEN).setBold(false).setUnderline(false).setFontSize(11);
   p.setAlignment(DocumentApp.HorizontalAlignment.JUSTIFY);
-  p.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingAfter(0);
+  p.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingBefore(0).setSpacingAfter(2);
   return p;
 }
 
-// Tabel keterangan tanpa garis (Hari/Tanggal, Jumlah Pegawai, dst) supaya kolom nilainya
-// rapi sejajar, menggantikan perataan pakai spasi manual yang gampang meleset.
-// `value` boleh berupa string biasa (satu baris, mis. "Jum'at, 7 Agustus 2026"), ATAU array
-// nama (dipakai untuk "Pegawai Cuti"/"Pegawai Dinas Luar") -- kalau array, dirender sebagai
-// daftar bernomor 1./2./dst, satu nama per baris, bukan digabung koma dalam satu baris panjang.
-function tambahTabelKeterangan_(body, rows) {
+function tambahTabelKeterangan_(body, rows, indent = 18) {
   const table = body.appendTable();
   table.setBorderWidth(0);
 
-  // Paragraf baru di Google Docs default punya "space after" (~10pt, dari gaya Normal text
-  // bawaan) yang KELIHATAN seperti baris kosong kalau tidak ditegaskan ke 0 -- ini yang
-  // sebelumnya bikin tiap baris (label, dan tiap nama bernomor di sel nilai) terlihat renggang
-  // dengan jarak seperti ada Enter kosong di antaranya, padahal cuma ganti paragraf biasa.
   const rapikanParagraf_ = (p) => {
-    p.setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
-    p.editAsText().setBold(false).setUnderline(false);
+    p.setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1.15);
+    p.setAlignment(DocumentApp.HorizontalAlignment.LEFT);
+    p.editAsText().setFontFamily(FONT_DOKUMEN).setBold(false).setUnderline(false).setFontSize(11);
     return p;
   };
 
@@ -1031,68 +1116,70 @@ function tambahTabelKeterangan_(body, rows) {
     const tr = table.appendTableRow();
 
     const cLabel = tr.appendTableCell("");
-    cLabel.setWidth(140);
+    cLabel.setWidth(165);
+    cLabel.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(indent).setPaddingRight(0);
     cLabel.clear();
     rapikanParagraf_(cLabel.appendParagraph(label));
     hapusParagrafKosongAwal_(cLabel);
 
     const cValue = tr.appendTableCell("");
+    cValue.setWidth(317);
+    cValue.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(4).setPaddingRight(0);
     cValue.clear();
     if (Array.isArray(value) && value.length) {
-      value.forEach((nama, i) => {
-        // Baris pertama diberi ": " di depan nomornya, baris berikutnya nomor lanjut tanpa
-        // tanda titik dua lagi (indentasi manual 2 spasi supaya kira-kira sejajar).
-        const prefix = i === 0 ? ": " : "  ";
-        rapikanParagraf_(cValue.appendParagraph(prefix + (i + 1) + ". " + nama));
-      });
+      if (value.length === 1) {
+        rapikanParagraf_(cValue.appendParagraph(": " + value[0]));
+      } else {
+        value.forEach((nama, i) => {
+          const prefix = i === 0 ? ": " : "  ";
+          rapikanParagraf_(cValue.appendParagraph(prefix + (i + 1) + ". " + nama));
+        });
+      }
     } else {
-      rapikanParagraf_(cValue.appendParagraph(": " + (Array.isArray(value) ? "Tidak ada" : value)));
+      rapikanParagraf_(cValue.appendParagraph(Array.isArray(value) ? ": Tidak ada" : value));
     }
     hapusParagrafKosongAwal_(cValue);
   });
 }
 
-function tambahListNomor_(body, items) {
+function tambahListNomor_(body, items, indent = 0) {
   (items || []).forEach((text) => {
     const item = body.appendListItem(String(text));
     item.setGlyphType(DocumentApp.GlyphType.NUMBER);
-    item.editAsText().setBold(false).setUnderline(false);
-    // Rata kanan-kiri, sama seperti tambahParagrafIsi_ -- item list juga bagian isi surat.
+
+    if (indent > 0) {
+      item.setIndentStart(indent + 18);
+      item.setIndentFirstLine(indent);
+    }
+
+    item.editAsText().setFontFamily(FONT_DOKUMEN).setBold(false).setUnderline(false).setFontSize(11);
     item.setAlignment(DocumentApp.HorizontalAlignment.JUSTIFY);
-    item.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingAfter(0);
+    item.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingBefore(0).setSpacingAfter(0);
   });
 }
 
-// List berhuruf kecil (a./b./c./d.) untuk bagian "HASIL YANG DI CAPAI", mengikuti gaya
-// penomoran di contoh laporan resmi.
-function tambahListHuruf_(body, items) {
+function tambahListHuruf_(body, items, indent = 0) {
   (items || []).forEach((text) => {
     const item = body.appendListItem(String(text));
     item.setGlyphType(DocumentApp.GlyphType.LATIN_LOWER);
-    item.editAsText().setBold(false).setUnderline(false);
-    // Rata kanan-kiri, sama seperti tambahParagrafIsi_ -- item list juga bagian isi surat.
+
+    if (indent > 0) {
+      item.setIndentStart(indent + 18);
+      item.setIndentFirstLine(indent);
+    }
+
+    item.editAsText().setFontFamily(FONT_DOKUMEN).setBold(false).setUnderline(false).setFontSize(11);
     item.setAlignment(DocumentApp.HorizontalAlignment.JUSTIFY);
-    item.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingAfter(0);
+    item.setLineSpacing(SPASI_BARIS_ISI_SURAT).setSpacingBefore(0).setSpacingAfter(0);
   });
 }
 
-// Tabel dokumentasi: 2 orang per baris (No.|Dokumentasi|Keterangan diulang 2x), meniru contoh
-// laporan resmi "14 Agustus 2026" di datasets/ yang menaruh dokumentasi magang berdampingan
-// 2 kolom per baris untuk hemat halaman (di sana dicapai lewat page-section landscape + kolom
-// koran khusus Word; Google Docs/DocumentApp TIDAK punya fitur setara -- Class Body tidak
-// mengekspos multi-kolom maupun ganti orientasi halaman per section -- jadi efek "2 kolom"
-// di sini didekati dengan tabel 6-kolom per baris (2 set No/Dokumentasi/Keterangan) yang tetap
-// di halaman A4 portrait, dipakai untuk tabel Pegawai maupun Magang atas permintaan user).
 function tambahTabelDokumentasi_(body, rows, tipe) {
   if (!rows || !rows.length) {
-    body.appendParagraph("Tidak ada data.").editAsText().setBold(false);
+    body.appendParagraph("Tidak ada data.").editAsText().setFontFamily(FONT_DOKUMEN).setBold(false).setFontSize(10);
     return;
   }
 
-  // Ukuran font sel tabel sengaja dibuat bertingkat kecil (header 10pt, uraian 9pt, nama 10pt,
-  // NIP/NIM 9pt, jabatan 8pt) meniru contoh laporan resmi (datasets/*.docx) -- di sana nama
-  // pegawai memang tidak dibesarkan seperti teks isi surat, dan NIP/jabatan malah lebih kecil
-  // lagi, supaya tabel yang berulang untuk puluhan orang tidak terlihat kebesaran/berat.
   const FONT_HEADER = 10;
   const FONT_NO = 10;
   const FONT_URAIAN_LABEL = 9;
@@ -1101,55 +1188,49 @@ function tambahTabelDokumentasi_(body, rows, tipe) {
   const FONT_NIP = 9;
   const FONT_JABATAN = 8;
 
-  // Lebar kolom per set (No./Dokumentasi/Keterangan) dibagi 2 dari lebar konten body A4 portrait.
-  // Body width = 595.3 pt, margin kiri 56.65, margin kanan 56.65 -> Lebar konten = ~482 pt.
-  // Dibagi dua orang per baris: masing-masing ~241 pt (No: 20 pt, Foto: 80 pt, Keterangan: ~141 pt).
-  const LEBAR_NO = 20;
-  const LEBAR_FOTO = 80;
-  const LEBAR_TARGET_GAMBAR = 75;
-
   const table = body.appendTable();
   const header = table.appendTableRow();
   for (let i = 0; i < 2; i++) {
     const cNo = header.appendTableCell("No");
     const cDok = header.appendTableCell("Dokumentasi");
     const cKet = header.appendTableCell("Keterangan");
-    // .setUnderline(false) WAJIB ditegaskan di sini dan di semua teks tabel di bawah -- blok
-    // tanda tangan sebelumnya (pNamaTtd) memakai .setUnderline(true) untuk nama Kakanwil, dan
-    // tanpa ditegaskan ulang, gaya underline itu ikut terbawa ke teks tabel Dokumentasi
-    // Kegiatan yang ditulis setelahnya (bug yang sama seperti catatan bold di atas, tapi
-    // untuk underline).
-    [cNo, cDok, cKet].forEach((c) => c.editAsText().setBold(true).setUnderline(false).setFontSize(FONT_HEADER));
+
+    [cNo, cDok, cKet].forEach((c) => {
+      c.setPaddingTop(4).setPaddingBottom(4).setPaddingLeft(4).setPaddingRight(4);
+      c.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
+      c.editAsText().setFontFamily(FONT_DOKUMEN).setBold(true).setUnderline(false).setFontSize(FONT_HEADER);
+      c.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0);
+    });
   }
 
   const rapikan_ = (p, bold, size) => {
-    p.setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
-    p.editAsText().setBold(bold).setUnderline(false).setFontSize(size);
+    p.setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1.1);
+    p.editAsText().setFontFamily(FONT_DOKUMEN).setBold(bold).setUnderline(false).setFontSize(size);
     return p;
   };
 
-  // isiSatuOrang_ menulis satu set No./Dokumentasi/Keterangan ke 3 sel yang sudah ada di baris
-  // `tr` -- dipanggil 2x per baris (nomor genap-ganjil), atau dibiarkan kosong kalau jumlah
-  // orang ganjil (slot ke-2 di baris terakhir).
   const isiSatuOrang_ = (tr, nomor, row) => {
     const cellNo = tr.appendTableCell(nomor != null ? String(nomor) : "");
-    cellNo.setWidth(LEBAR_NO);
-    cellNo.editAsText().setBold(true).setUnderline(false).setFontSize(FONT_NO);
+    cellNo.setPaddingTop(4).setPaddingBottom(4).setPaddingLeft(2).setPaddingRight(2);
+    cellNo.editAsText().setFontFamily(FONT_DOKUMEN).setBold(true).setUnderline(false).setFontSize(FONT_NO);
+    cellNo.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
 
     const cellFoto = tr.appendTableCell("");
-    cellFoto.setWidth(LEBAR_FOTO);
     if (row) {
       cellFoto.clear();
-      sisipkanGambarKeSel_(cellFoto, row.foto, row.nama, LEBAR_TARGET_GAMBAR);
+      cellFoto.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(0).setPaddingRight(0);
+      cellFoto.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
+
+      // Foto (non-portrait) dibesarkan memenuhi lebar penuh kolom 150pt hingga mentok ke garis kolom
+      sisipkanGambarKeSel_(cellFoto, row.foto, row.nama, 150);
       hapusParagrafKosongAwal_(cellFoto);
+      if (cellFoto.getNumChildren() > 0 && cellFoto.getChild(0).getType() === DocumentApp.ElementType.PARAGRAPH) {
+        cellFoto.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0);
+      }
     }
 
-    // rapikan_() menegaskan setSpacingAfter(0) supaya baris "Uraian Kegiatan :", isi uraian,
-    // nama, NIP, dan jabatan menempel rapat -- tanpa ini tiap baris punya jarak ekstra bawaan
-    // Google Docs (~10pt) yang terlihat seperti ada Enter kosong di antaranya. Baris kosong di
-    // tengah (setelah uraian) SENGAJA dipertahankan sebagai spacer sebelum nama -- yang
-    // dihapus hapusParagrafKosongAwal_() hanya paragraf kosong SISA .clear() di awal cell.
     const cellKet = tr.appendTableCell("");
+    cellKet.setPaddingTop(4).setPaddingBottom(4).setPaddingLeft(5).setPaddingRight(5);
     if (row) {
       cellKet.clear();
       rapikan_(cellKet.appendParagraph("Uraian Kegiatan :"), true, FONT_URAIAN_LABEL);
@@ -1169,13 +1250,18 @@ function tambahTabelDokumentasi_(body, rows, tipe) {
     isiSatuOrang_(tr, rows[i + 1] ? i + 2 : null, rows[i + 1] || null);
   }
 
-  // Lebar kolom No./Dokumentasi diulang untuk kedua set (indeks 0-2 set pertama, 3-5 set
-  // kedua); kolom Keterangan (indeks 2 & 5) sengaja dibiarkan otomatis mengisi sisa lebar
-  // (DocumentApp meregangkan tabel penuh ke lebar konten body).
-  table.setColumnWidth(0, LEBAR_NO);
-  table.setColumnWidth(1, LEBAR_FOTO);
-  table.setColumnWidth(3, LEBAR_NO);
-  table.setColumnWidth(4, LEBAR_FOTO);
+  // Lebar total Landscape A4 = 728 pt -> 2 set x (24 + 150 + 190 = 364 pt) = 728 pt
+  if (table.getNumRows() > 0) {
+    const firstRow = table.getRow(0);
+    if (firstRow.getNumCells() === 6) {
+      firstRow.getCell(0).setWidth(24);
+      firstRow.getCell(1).setWidth(150);
+      firstRow.getCell(2).setWidth(190);
+      firstRow.getCell(3).setWidth(24);
+      firstRow.getCell(4).setWidth(150);
+      firstRow.getCell(5).setWidth(190);
+    }
+  }
 }
 
 function sisipkanGambarKeSel_(cell, fotoUrl, namaUntukLog, lebarTarget) {
@@ -1185,47 +1271,66 @@ function sisipkanGambarKeSel_(cell, fotoUrl, namaUntukLog, lebarTarget) {
 
     const blob = DriveApp.getFileById(fileId).getBlob();
     const image = cell.appendImage(blob);
-    // Lebar-tetap (default 75pt, sesuai kolom Dokumentasi yang sudah dipersempit untuk layout
-    // 2-orang-per-baris) dengan tinggi proporsional -- dibatasi tinggi maksimum di
-    // resizeGambarProporsional_() supaya foto potret (portrait, rasio tinggi > lebar) tidak
-    // membuat baris tabel melar berlebihan dibanding baris lain yang fotonya landscape/persegi.
-    resizeGambarProporsional_(image, lebarTarget || 75, 130);
+
+    const lebarAsli = image.getWidth() || 1;
+    const tinggiAsli = image.getHeight() || 1;
+    const rasio = tinggiAsli / lebarAsli; // < 1 berarti landscape, >= 1 berarti portrait/square
+
+    if (lebarTarget > 0) {
+      if (rasio <= 1.05) {
+        image.setWidth(lebarTarget);
+        image.setHeight(Math.round(lebarTarget * rasio));
+      } else {
+        // Foto Portrait: perbesar hingga lebar 135pt dengan batas tinggi maksimal 185pt agar proporsional & besar
+        let lebar = Math.min(lebarTarget, 135);
+        let tinggi = Math.round(lebar * rasio);
+        const tinggiMaks = 185;
+        if (tinggi > tinggiMaks) {
+          tinggi = tinggiMaks;
+          lebar = Math.max(95, Math.round(tinggi / rasio));
+        }
+        image.setWidth(lebar);
+        image.setHeight(tinggi);
+      }
+    }
   } catch (error) {
-    console.error("Gagal menyisipkan foto untuk " + namaUntukLog + ": " + (error.message || error));
-    cell.appendParagraph("(Foto tidak tersedia)").editAsText().setBold(false).setFontSize(9);
+    console.error("Gagal menyisipkan foto: " + (error.message || error));
+    cell.appendParagraph("(Foto tidak tersedia)").editAsText().setFontFamily(FONT_DOKUMEN).setBold(false).setFontSize(9);
   }
 }
 
-// Menyisipkan logo (dikirim client sebagai data URI base64) ke sel kop surat.
-function sisipkanLogoKeSel_(cell, dataUri) {
+function ambilBlobLogoResmi_(dataUri) {
   try {
     const matches = String(dataUri || "").match(/^data:(.+?);base64,(.+)$/);
-    if (!matches) return;
-    const bytes = Utilities.base64Decode(matches[2]);
-    const blob = Utilities.newBlob(bytes, matches[1], "logo.png");
-    const image = cell.appendImage(blob);
-    resizeGambarProporsional_(image, 82);
+    if (matches) {
+      const bytes = Utilities.base64Decode(matches[2]);
+      return Utilities.newBlob(bytes, matches[1], "logo.png");
+    }
   } catch (_) {}
+
+  try {
+    const resp = UrlFetchApp.fetch(DEFAULT_LOGO_URL, { muteHttpExceptions: true });
+    if (resp.getResponseCode() === 200) {
+      return resp.getBlob().setName("logo.png");
+    }
+  } catch (e) {
+    console.warn("Gagal mengambil logo dari URL referensi: " + (e.message || e));
+  }
+  return null;
 }
 
-// `tinggiMaks` opsional -- kalau diisi dan foto berorientasi potret (portrait, tinggi jauh
-// lebih besar dari lebar setelah diskalakan ke `lebarTarget`), skala ulang berdasarkan tinggi
-// supaya tidak melebihi `tinggiMaks`, baru lebar menyesuaikan (tetap proporsional, jadi lebih
-// sempit dari `lebarTarget` -- bukan terpotong/gepeng). Dipakai untuk foto dokumentasi kegiatan
-// yang banyak dikirim dalam bentuk potret (foto selfie WFH), supaya baris tabel tidak melar
-// berlebihan dibanding baris lain yang fotonya landscape/persegi.
-function resizeGambarProporsional_(image, lebarTarget, tinggiMaks) {
-  const lebarAsli = image.getWidth();
-  const tinggiAsli = image.getHeight();
-  const rasio = lebarAsli > 0 ? tinggiAsli / lebarAsli : 1;
-  let lebar = lebarTarget;
-  let tinggi = Math.round(rasio * lebar);
-  if (tinggiMaks && tinggi > tinggiMaks) {
-    tinggi = tinggiMaks;
-    lebar = rasio > 0 ? Math.round(tinggi / rasio) : lebarTarget;
-  }
-  image.setWidth(lebar);
-  image.setHeight(tinggi);
+function sisipkanLogoKeSel_(cell, dataUri) {
+  try {
+    const blob = ambilBlobLogoResmi_(dataUri);
+    if (!blob) return;
+    const image = cell.appendImage(blob);
+
+    const lebarAsli = image.getWidth() || 1;
+    const tinggiAsli = image.getHeight() || 1;
+    const rasio = lebarAsli > 0 ? tinggiAsli / lebarAsli : 1;
+    image.setWidth(72);
+    image.setHeight(Math.round(rasio * 72));
+  } catch (_) {}
 }
 
 function ekstrakDriveFileId_(url) {
@@ -1237,12 +1342,6 @@ function ekstrakDriveFileId_(url) {
   return "";
 }
 
-// Dipanggil dari client (renderDokumentasiTable di index.html) untuk menampilkan foto di
-// preview web. Sengaja TIDAK mengandalkan <img src> langsung ke URL Drive, karena banyak
-// kebijakan Google Workspace (terutama instansi pemerintah) memblokir/menonaktifkan sharing
-// "Anyone with link" sehingga foto gagal tampil bagi siapa pun di luar akun pemilik file.
-// DriveApp di sini berjalan sebagai pemilik skrip sehingga selalu punya akses, apa pun
-// pengaturan sharing filenya, lalu dikirim ke client sebagai data URI base64.
 function getFotoDataUri(fotoUrl) {
   try {
     const fileId = ekstrakDriveFileId_(fotoUrl);
@@ -1254,8 +1353,6 @@ function getFotoDataUri(fotoUrl) {
     return "";
   }
 }
-
-// ------------------------- HELPERS -------------------------
 
 function readPegawai_(sheet) {
   if (!sheet || sheet.getLastRow() < 2) return [];
@@ -1323,10 +1420,6 @@ function makeId_(prefix) {
   return prefix + "-" + Utilities.getUuid().split("-")[0].toUpperCase();
 }
 
-// Sheet sering menampilkan ID lama yang diketik manual sebagai angka (mis. "14" tersimpan/
-// terformat menjadi "14.0"), sementara ID baru dari makeId_() berupa teks ("PEG-XXXXXXXX").
-// Tanpa normalisasi, perbandingan ID antar sheet bisa gagal dan menyebabkan data terlihat
-// tidak sinkron (mis. statistik kehadiran magang meleset). Fungsi ini menyeragamkan bentuknya.
 function normalizeId_(value) {
   const s = String(value == null ? "" : value).trim();
   return /^\d+\.0+$/.test(s) ? s.replace(/\.0+$/, "") : s;
