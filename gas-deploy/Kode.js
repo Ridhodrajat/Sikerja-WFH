@@ -4,6 +4,18 @@ const SHEET_MAGANG = "MasterMagang";
 const SHEET_PRESENSI = "PresensiWFH";
 const APP_TIMEZONE = "Asia/Makassar";
 const DEFAULT_LOGO_URL = "https://kemenimipas.go.id/images/logo/Kementerian-Hukum-Dan-Ham-Kemenkumham-Logo-Vector.png";
+const MAX_FOTO_BYTES = 5 * 1024 * 1024; // Batas ukuran foto dokumentasi: 5 MB
+const BARIS_KOSONG_TTD = 5; // Jumlah baris kosong untuk ruang tanda tangan Kepala Kanwil (sebelumnya 3)
+// Ukuran foto dalam POINT (pt). PENTING: setWidth()/setHeight() Apps Script memakai PIKSEL (1 pt = 4/3 px),
+// karena itu nilai pt di bawah dikonversi dulu. Kolom Dokumentasi = 150 pt, tetapi garis tabel menyita sebagian
+// ruang di sisi kiri-kanan, sehingga lebar foto dibuat 146.25 pt (= 195 px): hampir menyentuh garis
+// namun tidak menutupi garis di sisi kanan. Jika ingin lebih rapat/renggang, ubah nilai ini (kelipatan 0.75 pt).
+const FOTO_LEBAR_MAKS_PT = 146.25;
+const FOTO_TINGGI_MAKS_PT = 240; // batas tinggi agar 2 baris foto tegak tetap muat dalam 1 halaman landscape
+const PX_PER_PT = 4 / 3;
+// Logo resmi diambil dari file di Google Drive (sumber utama untuk website dan header PDF/Docs).
+// ID = bagian panjang pada link Drive: /file/d/<ID>/view
+const LOGO_DRIVE_FILE_ID = "1od2aUJBtlSWVDT1x0QPQ_ZR-oDNnMmHy";
 
 // ======================= ADMIN LOGIN =======================
 function verifikasiAdmin(pin) {
@@ -28,6 +40,24 @@ function verifikasiAdmin(pin) {
       success: false,
       error: error.message || String(error),
     };
+  }
+}
+
+// Logo permanen: dipakai web (cadangan bila browser gagal memuat URL) dan dokumen laporan.
+function getLogoDataUri() {
+  try {
+    const cache = CacheService.getScriptCache();
+    const cached = cache.get("LOGO_DATA_URI_V3");
+    if (cached) return cached;
+
+    const blob = ambilBlobLogoResmi_("");
+    if (!blob) return "";
+    const uri = "data:" + blob.getContentType() + ";base64," + Utilities.base64Encode(blob.getBytes());
+    if (uri.length < 90000) cache.put("LOGO_DATA_URI_V3", uri, 21600);
+    return uri;
+  } catch (error) {
+    console.warn("Gagal memuat logo: " + (error.message || error));
+    return "";
   }
 }
 
@@ -155,9 +185,15 @@ function simpanPresensi(formData) {
     for (let i = 1; i < values.length; i++) {
       const sameDate = String(values[i][1]).trim() === tanggalStr;
       const sameKat = String(values[i][2]).trim() === kategoriNorm;
-      const sameId = normalizeId_(values[i][3]) === idUserNorm;
-      const sameNip = nipNimNorm !== "" && String(values[i][5]).trim() === nipNimNorm;
-      if (sameDate && sameKat && (sameId || sameNip)) {
+      if (!sameDate || !sameKat) continue;
+
+      // NIP/NIM adalah kunci utama. ID hanya dipakai bila NIP/NIM tidak tersedia,
+      // karena ID di master bisa berubah/dipakai ulang untuk orang lain.
+      const cocok = nipNimNorm !== ""
+        ? String(values[i][5]).trim() === nipNimNorm
+        : (idUserNorm !== "" && normalizeId_(values[i][3]) === idUserNorm);
+
+      if (cocok) {
         rowToUpdate = i + 1;
         break;
       }
@@ -211,6 +247,9 @@ function saveImageToDrive(base64Data, namaUser, tanggal) {
 
     const contentType = matches[1];
     const bytes = Utilities.base64Decode(matches[2]);
+    if (bytes.length > MAX_FOTO_BYTES) {
+      throw new Error("Ukuran foto melebihi batas maksimal 5 MB.");
+    }
     const cleanNama = String(namaUser || "user").replace(/[^a-zA-Z0-9]/g, "_");
     const ext = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
     const blob = Utilities.newBlob(bytes, contentType, `WFH_${cleanNama}_${tanggal}.${ext}`);
@@ -330,15 +369,16 @@ function hapusMasterData(type, id) {
   }
 }
 
-function setStatusAdminCepat(userId, status) {
+function setStatusAdminCepat(userId, status, nipNim) {
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(5000);
 
     userId = normalizeId_(userId);
+    nipNim = String(nipNim || "").trim();
     status = String(status || "").trim();
 
-    if (!userId) throw new Error("ID pegawai tidak valid.");
+    if (!userId && !nipNim) throw new Error("Identitas pegawai tidak valid.");
     if (status && status !== "Cuti" && status !== "Dinas Luar") {
       throw new Error("Status tidak valid.");
     }
@@ -352,7 +392,10 @@ function setStatusAdminCepat(userId, status) {
     if (pegLastRow < 2) throw new Error("Master pegawai kosong.");
 
     const pegValues = shPegawai.getRange(2, 1, pegLastRow - 1, 6).getDisplayValues();
-    const pegRowIdx = pegValues.findIndex((r) => normalizeId_(r[0]) === userId);
+    // NIP/NIM adalah kunci utama; ID hanya cadangan bila NIP/NIM tidak tersedia.
+    const pegRowIdx = nipNim
+      ? pegValues.findIndex((r) => String(r[2]).trim() === nipNim)
+      : pegValues.findIndex((r) => userId !== "" && normalizeId_(r[0]) === userId);
     if (pegRowIdx < 0) throw new Error("Pegawai tidak ditemukan.");
 
     const p = pegValues[pegRowIdx];
@@ -380,8 +423,13 @@ function setStatusAdminCepat(userId, status) {
         const tanggal = String(row[1]).trim();
         const kategori = String(row[2]).trim();
         const uid = normalizeId_(row[3]);
+        const rowNip = String(row[5] || "").trim();
         const st = String(row[8]).trim();
-        if (tanggal === tanggalStr && kategori === "Pegawai" && uid === userId) {
+        // NIP/NIM didahulukan; ID hanya dipakai bila NIP/NIM tidak tersedia.
+        const cocok = peg.nip
+          ? rowNip === peg.nip
+          : (userId !== "" && uid === userId);
+        if (tanggal === tanggalStr && kategori === "Pegawai" && cocok) {
           existingRow = i + 2;
           existingStatus = st;
           break;
@@ -457,32 +505,43 @@ function simpanStatusAdmin(statusRows) {
     const lastRow = Math.max(shPresensi.getLastRow(), 1);
     const existing = lastRow >= 2 ? shPresensi.getRange(2, 1, lastRow - 1, 11).getDisplayValues() : [];
 
-    const selectedById = {};
+    const selectedByKey = {};
     statusRows.forEach((item) => {
       const id = normalizeId_(item && item.idUser);
+      const p = id ? pegawaiById[id] : null;
+      const nip = p ? String(p.nip || "").trim() : "";
+      const key = nip ? "NIP:" + nip : (id ? "ID:" + id : "");
       const status = String((item && item.status) || "").trim();
-      if (!id) return;
-      selectedById[id] = status === "Cuti" || status === "Dinas Luar" ? status : "";
+      if (!key) return;
+      selectedByKey[key] = {
+        status: status === "Cuti" || status === "Dinas Luar" ? status : "",
+        pegawai: p
+      };
     });
 
     const rowsToWrite = [];
     const rowsToClear = [];
-    const existingTodayIds = new Set();
+    const existingTodayKeys = new Set();
 
     existing.forEach((row, idx) => {
       const tanggal = String(row[1] || "").trim();
       const kategori = String(row[2] || "").trim();
       const userId = normalizeId_(row[3]);
+      const rowNip = String(row[5] || "").trim();
       const existingStatus = String(row[8] || "").trim();
 
-      if (tanggal !== tanggalStr || kategori !== "Pegawai" || !userId) return;
-      existingTodayIds.add(userId);
+      if (tanggal !== tanggalStr || kategori !== "Pegawai") return;
+      if (!rowNip && !userId) return;
+
+      // NIP/NIM didahulukan; ID hanya dipakai untuk baris lama yang tidak menyimpan NIP/NIM.
+      const key = rowNip ? "NIP:" + rowNip : "ID:" + userId;
+      existingTodayKeys.add(key);
 
       if (existingStatus === "Hadir WFH") return;
 
-      if (!Object.prototype.hasOwnProperty.call(selectedById, userId)) return;
+      if (!Object.prototype.hasOwnProperty.call(selectedByKey, key)) return;
 
-      const newStatus = selectedById[userId];
+      const newStatus = selectedByKey[key].status;
       const sheetRow = idx + 2;
 
       if (!newStatus) {
@@ -492,7 +551,7 @@ function simpanStatusAdmin(statusRows) {
         return;
       }
 
-      const p = pegawaiById[userId];
+      const p = selectedByKey[key].pegawai;
       if (!p) return;
 
       rowsToWrite.push({
@@ -502,13 +561,13 @@ function simpanStatusAdmin(statusRows) {
     });
 
     const rowsToAppend = [];
-    Object.keys(selectedById).forEach((userId) => {
-      const status = selectedById[userId];
-      if (!status || existingTodayIds.has(userId)) return;
-      const p = pegawaiById[userId];
+    Object.keys(selectedByKey).forEach((key) => {
+      const sel = selectedByKey[key];
+      if (!sel.status || existingTodayKeys.has(key)) return;
+      const p = sel.pegawai;
       if (!p) return;
 
-      rowsToAppend.push([timestampStr, tanggalStr, "Pegawai", p.id, p.nama, p.nip, p.golongan, p.jabatan, status, status === "Cuti" ? "Cuti - ditandai oleh Admin" : "Dinas Luar - ditandai oleh Admin", ""]);
+      rowsToAppend.push([timestampStr, tanggalStr, "Pegawai", p.id, p.nama, p.nip, p.golongan, p.jabatan, sel.status, sel.status === "Cuti" ? "Cuti - ditandai oleh Admin" : "Dinas Luar - ditandai oleh Admin", ""]);
     });
 
     rowsToWrite.forEach((item) => {
@@ -540,6 +599,78 @@ function simpanStatusAdmin(statusRows) {
         presensiHariIni: presensiHariIni,
       },
     };
+  } catch (error) {
+    console.error(error);
+    return { success: false, error: error.message || String(error) };
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (_) {}
+  }
+}
+
+// Membatalkan (menghapus) satu baris presensi HARI INI atas perintah Admin.
+// Dipakai bila nama tidak muncul di form absen / rekap namun tercatat di monitoring,
+// sehingga orang tersebut dapat mengisi presensi ulang dengan data yang benar.
+function batalkanPresensi(presensiId, userId, nipNim, nama) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+    setupDatabase();
+
+    const ss = getSpreadsheet();
+    const sheet = ss.getSheetByName(SHEET_PRESENSI);
+    if (!sheet) throw new Error("Sheet presensi tidak ditemukan.");
+
+    const tanggalStr = formatDate_(new Date(), "yyyy-MM-dd");
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error("Belum ada data presensi.");
+
+    const values = sheet.getRange(2, 1, lastRow - 1, 11).getDisplayValues();
+    const uid = normalizeId_(userId);
+    const nipNorm = String(nipNim || "").trim();
+    const namaNorm = String(nama || "").trim().toLowerCase();
+
+    const rowUid = (i) => normalizeId_(values[i][3]);
+    const rowNip = (i) => String(values[i][5] || "").trim();
+    const rowNama = (i) => String(values[i][4] || "").trim().toLowerCase();
+    const isToday = (i) => String(values[i][1] || "").trim() === tanggalStr;
+
+    // NIP/NIM adalah kunci utama. ID hanya dipakai bila NIP/NIM tidak tersedia,
+    // agar baris orang lain tidak ikut terhapus saat ID master berubah/dipakai ulang.
+    const cocokIdentitas = (i) => {
+      if (nipNorm) return rowNip(i) === nipNorm;
+      if (uid) return rowUid(i) === uid;
+      return !!namaNorm && rowNama(i) === namaNorm;
+    };
+
+    let targetRow = -1;
+
+    // 1) Baris yang dipilih admin (PRES_ROW_n), diverifikasi dulu agar tidak salah hapus bila baris bergeser.
+    const match = String(presensiId || "").match(/^PRES_ROW_(\d+)$/);
+    if (match) {
+      const idx = Number(match[1]) - 2;
+      if (idx >= 0 && idx < values.length && isToday(idx) && cocokIdentitas(idx)) {
+        targetRow = idx + 2;
+      }
+    }
+
+    // 2) Bila baris tidak cocok lagi, cari baris presensi hari ini berdasarkan NIP/NIM (ID/nama hanya bila kosong).
+    if (targetRow < 0) {
+      for (let i = values.length - 1; i >= 0; i--) {
+        if (isToday(i) && cocokIdentitas(i)) {
+          targetRow = i + 2;
+          break;
+        }
+      }
+    }
+
+    if (targetRow < 0) throw new Error("Data presensi hari ini untuk nama tersebut tidak ditemukan atau sudah dibatalkan.");
+
+    sheet.deleteRow(targetRow);
+    SpreadsheetApp.flush();
+
+    return { success: true, data: getInitialData() };
   } catch (error) {
     console.error(error);
     return { success: false, error: error.message || String(error) };
@@ -586,11 +717,27 @@ function buatRekapGoogleDocs(payload) {
     try {
       file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.EDIT);
     } catch (_) {}
-    return { success: true, url: hasil.url };
+    return { success: true, id: hasil.id, url: hasil.url, warning: peringatanLogo_(hasil) };
   } catch (error) {
     console.error(error);
     return { success: false, error: error.message || String(error) };
   }
+}
+
+// Catatan langkah dokumen yang gagal (agar tidak gagal diam-diam). Ditampilkan sebagai peringatan di web.
+const CATATAN_DOKUMEN = [];
+function catatDokumen_(pesan) {
+  console.error(pesan);
+  if (CATATAN_DOKUMEN.indexOf(pesan) === -1 && CATATAN_DOKUMEN.length < 6) CATATAN_DOKUMEN.push(pesan);
+}
+
+function peringatanLogo_(hasil) {
+  const daftar = [];
+  if (hasil && hasil.logoOk === false) {
+    daftar.push("Logo tidak berhasil dimuat ke dokumen (cek LOGO_DRIVE_FILE_ID di kode_1.gs).");
+  }
+  CATATAN_DOKUMEN.forEach((c) => daftar.push(c));
+  return daftar.join("\n");
 }
 
 function buatRekapPDF(payload) {
@@ -610,7 +757,7 @@ function buatRekapPDF(payload) {
       docFile.setTrashed(true);
     } catch (_) {}
 
-    return { success: true, url: pdfFile.getUrl() };
+    return { success: true, id: pdfFile.getId(), url: pdfFile.getUrl(), warning: peringatanLogo_(hasil) };
   } catch (error) {
     console.error(error);
     return { success: false, error: error.message || String(error) };
@@ -623,6 +770,7 @@ function namaFileRekap_(payload) {
 }
 
 function buatDokumenRekap_(payload) {
+  CATATAN_DOKUMEN.length = 0;
   if (!payload || !payload.tanggal) throw new Error("Data rekap tidak valid. Pilih tanggal terlebih dahulu.");
 
   const doc = DocumentApp.create(namaFileRekap_(payload));
@@ -635,7 +783,7 @@ function buatDokumenRekap_(payload) {
 
   const tanggalLengkap = String(payload.tanggalLengkap || payload.tanggal);
   const tanggalBiasa = String(payload.tanggalBiasa || payload.tanggal);
-  const tanggalJudul = String(payload.tanggalJudul || tanggalLengkap);
+  const tanggalJudul = String(payload.tanggalJudul || tanggalLengkap).toUpperCase();
   const tanggalDokumentasi = String(payload.tanggalDokumentasi || tanggalBiasa.toUpperCase());
   const jumlahPegawai = Number(payload.jumlahPegawai || 0);
   const jumlahWFH = Number(payload.jumlahWFH || 0);
@@ -646,10 +794,16 @@ function buatDokumenRekap_(payload) {
   const pegawaiDinasLuar = Array.isArray(payload.pegawaiDinasLuar) ? payload.pegawaiDinasLuar : [];
   const pegawaiWFH = Array.isArray(payload.pegawaiWFH) ? payload.pegawaiWFH : [];
   const magang = Array.isArray(payload.magang) ? payload.magang : [];
+  
+  // PENYESUAIAN 1: Memaksa nama Kakanwil selalu baru di Google Docs & PDF (Jika frontend masih bawa data lama)
   const kakanwil = payload.kakanwil || {};
+  if (!kakanwil.nama || kakanwil.nama.includes("Erwedi")) {
+    kakanwil.nama = "Bagus Kurniawan, M.A., S.Sos.";
+    kakanwil.nip = "197103291994031001";
+  }
 
   // ---------- KOP SURAT ----------
-  tambahKopSurat_(body, payload.logoDataUri);
+  let logoOk = tambahKopSurat_(body, payload.logoDataUri);
   hapusParagrafKosongAwal_(body);
 
   // ---------- JUDUL LAPORAN ----------
@@ -705,10 +859,12 @@ function buatDokumenRekap_(payload) {
   barisKeterangan.push(["Pegawai Dinas Luar", pegawaiDinasLuar.length ? pegawaiDinasLuar : ": Tidak ada"]);
   tambahTabelKeterangan_(body, barisKeterangan, 18);
 
-  body.appendPageBreak();
-
+  // "Adapun pelaksanaannya sebagai berikut:" dimulai di halaman 2. Dengan Docs API dipakai properti
+  // "pageBreakBefore" pada paragraf itu sendiri (tanpa paragraf pemisah halaman, jadi tidak ada halaman kosong).
+  const pakaiDocsApi = typeof Docs !== "undefined" && Docs.Documents;
+  if (!pakaiDocsApi) body.appendPageBreak();
   const pAdapun = tambahParagrafIsi_(body, "Adapun pelaksanaannya sebagai berikut:", 0, 0);
-  pAdapun.setSpacingBefore(6);
+  pAdapun.setSpacingBefore(0);
   tambahListNomor_(
     body,
     [
@@ -722,7 +878,7 @@ function buatDokumenRekap_(payload) {
     0
   );
 
-  // ---------- C. HASIL YANG DICAPAI ----------
+  // ---------- C. HASIL YANG DI CAPAI ----------
   tambahJudulBagianHuruf_(body, "C", "HASIL YANG DICAPAI");
   tambahListHuruf_(
     body,
@@ -779,11 +935,9 @@ function buatDokumenRekap_(payload) {
 
   rapikanTtd_(cellKanan.appendParagraph("Banjarmasin, " + tanggalBiasa), false, false);
   rapikanTtd_(cellKanan.appendParagraph("Kepala Kantor Wilayah,"), false, false);
-  rapikanTtd_(cellKanan.appendParagraph(""), false, false);
-  rapikanTtd_(cellKanan.appendParagraph(""), false, false);
-  rapikanTtd_(cellKanan.appendParagraph(""), false, false);
-  rapikanTtd_(cellKanan.appendParagraph(""), false, false);
-  rapikanTtd_(cellKanan.appendParagraph(""), false, false);
+  for (let i = 0; i < BARIS_KOSONG_TTD; i++) {
+    rapikanTtd_(cellKanan.appendParagraph(""), false, false);
+  }
   rapikanTtd_(cellKanan.appendParagraph(String(kakanwil.nama || "-")), false, false);
   rapikanTtd_(cellKanan.appendParagraph("NIP. " + String(kakanwil.nip || "-")), false, false);
   hapusParagrafKosongAwal_(cellKanan);
@@ -802,11 +956,77 @@ function buatDokumenRekap_(payload) {
     tambahTabelDokumentasi_(body, magang, "magang");
   }
 
+  // Paragraf kosong di ujung dokumen (wajib ada setelah tabel) dikecilkan agar tidak memunculkan halaman kosong
+  try {
+    const terakhir = body.getChild(body.getNumChildren() - 1);
+    if (terakhir.getType() === DocumentApp.ElementType.PARAGRAPH && terakhir.asParagraph().getText() === "") {
+      terakhir.asParagraph().setLineSpacing(1).setSpacingBefore(0).setSpacingAfter(0);
+      terakhir.asParagraph().setAttributes({ [DocumentApp.Attribute.FONT_SIZE]: 1 });
+    }
+  } catch (_) {}
+
   doc.saveAndClose();
 
+  if (!logoOk && pakaiDocsApi) logoOk = sisipkanLogoViaDocsApi_(doc.getId());
+
+  const halamanBaruOk = pakaiDocsApi ? mulaiHalamanBaruAdapun_(doc.getId()) : true;
+  if (!halamanBaruOk) sisipkanPemisahHalamanAdapun_(doc.getId());
   sesuaikanOrientasiDanFotoDokumentasi_(doc.getId());
   jagaTandaTanganTetapUtuh_(doc.getId(), "Banjarmasin, " + tanggalBiasa);
-  return { id: doc.getId(), url: doc.getUrl() };
+  return { id: doc.getId(), url: doc.getUrl(), logoOk: logoOk };
+}
+
+const TEKS_ADAPUN = "Adapun pelaksanaannya sebagai berikut:";
+
+// Menandai paragraf "Adapun..." agar selalu mulai di awal halaman (halaman 2), tanpa paragraf kosong tambahan.
+function mulaiHalamanBaruAdapun_(docId) {
+  try {
+    const dokumen = Docs.Documents.get(docId);
+    const content = (dokumen.body && dokumen.body.content) || [];
+    for (let i = 0; i < content.length; i++) {
+      const el = content[i];
+      if (!el.paragraph) continue;
+      const teks = (el.paragraph.elements || []).map((e) => (e.textRun && e.textRun.content) || "").join("").trim();
+      if (teks === TEKS_ADAPUN) {
+        Docs.Documents.batchUpdate(
+          {
+            requests: [
+              {
+                updateParagraphStyle: {
+                  range: { startIndex: el.startIndex, endIndex: el.endIndex },
+                  paragraphStyle: { pageBreakBefore: true },
+                  fields: "pageBreakBefore",
+                },
+              },
+            ],
+          },
+          docId
+        );
+        return true;
+      }
+    }
+  } catch (error) {
+    catatDokumen_("Halaman 2 gagal diatur (aktifkan layanan Docs API): " + (error.message || error));
+  }
+  return false;
+}
+
+// Cadangan bila properti pageBreakBefore tidak dapat dipakai: sisipkan pemisah halaman tepat sebelum paragraf "Adapun...".
+function sisipkanPemisahHalamanAdapun_(docId) {
+  try {
+    const doc = DocumentApp.openById(docId);
+    const body = doc.getBody();
+    for (let i = 0; i < body.getNumChildren(); i++) {
+      const anak = body.getChild(i);
+      if (anak.getType() === DocumentApp.ElementType.PARAGRAPH && anak.asParagraph().getText().trim() === TEKS_ADAPUN) {
+        body.insertPageBreak(i);
+        break;
+      }
+    }
+    doc.saveAndClose();
+  } catch (error) {
+    catatDokumen_("Pemisah halaman gagal disisipkan: " + (error.message || error));
+  }
 }
 
 function jagaTandaTanganTetapUtuh_(docId, teksBanjarmasin) {
@@ -843,9 +1063,11 @@ function jagaTandaTanganTetapUtuh_(docId, teksBanjarmasin) {
     if (idxAnchor < 0) return;
 
     const idxMulai = idxAnchor;
-    const idxAkhir = Math.min(paragraf.length - 1, idxAnchor + 8);
+    // Banjarmasin + Kepala Kantor Wilayah + baris kosong + nama + NIP
+    const idxAkhir = Math.min(paragraf.length - 1, idxAnchor + 2 + BARIS_KOSONG_TTD + 1);
     const elMulai = paragraf[idxMulai];
-    const elAkhir = paragraf[idxAkhir];
+    // Paragraf terakhir (NIP) tidak diberi keepWithNext agar blok tidak "menempel" ke bagian setelahnya
+    const elAkhir = paragraf[Math.max(idxMulai, idxAkhir - 1)];
 
     Docs.Documents.batchUpdate(
       {
@@ -862,7 +1084,7 @@ function jagaTandaTanganTetapUtuh_(docId, teksBanjarmasin) {
       docId
     );
   } catch (error) {
-    console.error("Gagal menjaga blok tanda tangan: " + (error.message || error));
+    catatDokumen_("Blok tanda tangan gagal dijaga utuh: " + (error.message || error));
   }
 }
 
@@ -955,8 +1177,35 @@ function sesuaikanOrientasiDanFotoDokumentasi_(docId) {
     if (requestsStyle.length > 0) {
       Docs.Documents.batchUpdate({ requests: requestsStyle }, docId);
     }
+
+    // KUNCI LEBAR KOLOM: No 24 pt, Dokumentasi 150 pt, Keterangan 190 pt (2 set = 728 pt, pas lebar halaman landscape)
+    const requestsLock = [];
+    const kunciKolom_ = (startIndex, kolom, lebarPt) => {
+      requestsLock.push({
+        updateTableColumnProperties: {
+          tableStartLocation: { index: startIndex },
+          columnIndices: kolom,
+          tableColumnProperties: { widthType: "FIXED_WIDTH", width: { magnitude: lebarPt, unit: "PT" } },
+          fields: "widthType,width",
+        },
+      });
+    };
+    const cariTabel_ = (elements) => {
+      elements.forEach((el) => {
+        if (el.table && el.table.columns === 6) {
+          kunciKolom_(el.startIndex, [0, 3], 24);
+          kunciKolom_(el.startIndex, [1, 4], 150);
+          kunciKolom_(el.startIndex, [2, 5], 190);
+        }
+      });
+    };
+    cariTabel_(content2);
+
+    if (requestsLock.length > 0) {
+      Docs.Documents.batchUpdate({ requests: requestsLock }, docId);
+    }
   } catch (error) {
-    console.error("Gagal Docs API: " + (error.message || error));
+    catatDokumen_("Halaman landscape / lebar kolom dokumentasi gagal diatur (aktifkan layanan Docs API): " + (error.message || error));
   }
 }
 
@@ -985,7 +1234,7 @@ function tambahKopSurat_(body, logoDataUri) {
   cellLogo.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
   cellLogo.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
   cellLogo.clear();
-  sisipkanLogoKeSel_(cellLogo, logoDataUri);
+  const logoOk = sisipkanLogoKeSel_(cellLogo, logoDataUri);
   hapusParagrafKosongAwal_(cellLogo);
   if (cellLogo.getNumChildren() > 0 && cellLogo.getChild(0).getType() === DocumentApp.ElementType.PARAGRAPH) {
     cellLogo.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER).setIndentStart(0).setIndentFirstLine(0);
@@ -1045,6 +1294,7 @@ function tambahKopSurat_(body, logoDataUri) {
       break;
     }
   }
+  return logoOk;
 }
 
 function tambahParagrafTengah_(body, text, bold, size) {
@@ -1122,15 +1372,15 @@ function tambahTabelKeterangan_(body, rows, indent = 18) {
     cValue.setWidth(317);
     cValue.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(4).setPaddingRight(0);
     cValue.clear();
-    if (Array.isArray(value) && value.length) {
-      if (value.length === 1) {
-        rapikanParagraf_(cValue.appendParagraph(": " + value[0]));
-      } else {
-        value.forEach((nama, i) => {
-          const prefix = i === 0 ? ": " : "  ";
-          rapikanParagraf_(cValue.appendParagraph(prefix + (i + 1) + ". " + nama));
-        });
-      }
+    if (Array.isArray(value) && value.length === 1) {
+      // Hanya 1 orang: langsung nama, tanpa nomor
+      rapikanParagraf_(cValue.appendParagraph(": " + value[0]));
+    } else if (Array.isArray(value) && value.length > 1) {
+      // Lebih dari 1 orang: diurutkan per nomor
+      value.forEach((nama, i) => {
+        const prefix = i === 0 ? ": " : "  ";
+        rapikanParagraf_(cValue.appendParagraph(prefix + (i + 1) + ". " + nama));
+      });
     } else {
       rapikanParagraf_(cValue.appendParagraph(Array.isArray(value) ? ": Tidak ada" : value));
     }
@@ -1210,19 +1460,25 @@ function tambahTabelDokumentasi_(body, rows, tipe) {
     cellNo.setPaddingTop(4).setPaddingBottom(4).setPaddingLeft(2).setPaddingRight(2);
     cellNo.editAsText().setFontFamily(FONT_DOKUMEN).setBold(true).setUnderline(false).setFontSize(FONT_NO);
     cellNo.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+    cellNo.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
 
     const cellFoto = tr.appendTableCell("");
     if (row) {
       cellFoto.clear();
-      cellFoto.setPaddingTop(2).setPaddingBottom(2).setPaddingLeft(0).setPaddingRight(0);
+      cellFoto.setPaddingTop(0).setPaddingBottom(0).setPaddingLeft(0).setPaddingRight(0);
       cellFoto.setVerticalAlignment(DocumentApp.VerticalAlignment.CENTER);
 
-      // Foto (non-portrait) dibesarkan memenuhi lebar penuh kolom 150pt hingga mentok ke garis kolom
-      sisipkanGambarKeSel_(cellFoto, row.foto, row.nama, 150);
-      hapusParagrafKosongAwal_(cellFoto);
-      if (cellFoto.getNumChildren() > 0 && cellFoto.getChild(0).getType() === DocumentApp.ElementType.PARAGRAPH) {
-        cellFoto.getChild(0).asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER).setSpacingBefore(0).setSpacingAfter(0);
+      // Foto memenuhi lebar kolom dokumentasi (lihat sisipkanGambarKeSel_)
+      sisipkanGambarKeSel_(cellFoto, row.foto, row.nama);
+      
+      // Hapus jarak bawaan paragraf Google Docs agar tidak ada sela putih
+      if (cellFoto.getNumChildren() > 0) {
+        const p = cellFoto.getChild(0).asParagraph();
+        p.setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1)
+         .setIndentStart(0).setIndentFirstLine(0).setIndentEnd(0)
+         .setAlignment(DocumentApp.HorizontalAlignment.CENTER);
       }
+      hapusParagrafKosongAwal_(cellFoto);
     }
 
     const cellKet = tr.appendTableCell("");
@@ -1247,20 +1503,48 @@ function tambahTabelDokumentasi_(body, rows, tipe) {
   }
 
   // Lebar total Landscape A4 = 728 pt -> 2 set x (24 + 150 + 190 = 364 pt) = 728 pt
-  if (table.getNumRows() > 0) {
-    const firstRow = table.getRow(0);
-    if (firstRow.getNumCells() === 6) {
-      firstRow.getCell(0).setWidth(24);
-      firstRow.getCell(1).setWidth(150);
-      firstRow.getCell(2).setWidth(190);
-      firstRow.getCell(3).setWidth(24);
-      firstRow.getCell(4).setWidth(150);
-      firstRow.getCell(5).setWidth(190);
+  for (let r = 0; r < table.getNumRows(); r++) {
+    const row = table.getRow(r);
+    if (row.getNumCells() === 6) {
+      row.getCell(0).setWidth(24);
+      row.getCell(1).setWidth(150);
+      row.getCell(2).setWidth(190);
+      row.getCell(3).setWidth(24);
+      row.getCell(4).setWidth(150);
+      row.getCell(5).setWidth(190);
     }
   }
 }
 
-function sisipkanGambarKeSel_(cell, fotoUrl, namaUntukLog, lebarTarget) {
+// Membaca ukuran asli gambar (piksel) langsung dari data JPEG/PNG/GIF, agar rasio selalu benar (tidak gepeng).
+function ukuranGambarDariBlob_(blob) {
+  try {
+    const b = blob.getBytes();
+    const u = (i) => b[i] & 0xff;
+    if (u(0) === 0x89 && u(1) === 0x50 && u(2) === 0x4e && u(3) === 0x47) {
+      return { w: (u(16) << 24) | (u(17) << 16) | (u(18) << 8) | u(19), h: (u(20) << 24) | (u(21) << 16) | (u(22) << 8) | u(23) };
+    }
+    if (u(0) === 0x47 && u(1) === 0x49 && u(2) === 0x46) {
+      return { w: u(6) | (u(7) << 8), h: u(8) | (u(9) << 8) };
+    }
+    if (u(0) === 0xff && u(1) === 0xd8) {
+      let i = 2;
+      while (i + 9 < b.length) {
+        if (u(i) !== 0xff) { i++; continue; }
+        const m = u(i + 1);
+        if (m === 0xff) { i++; continue; }
+        if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
+          return { w: (u(i + 7) << 8) | u(i + 8), h: (u(i + 5) << 8) | u(i + 6) };
+        }
+        if (m === 0x01 || (m >= 0xd0 && m <= 0xd9)) { i += 2; continue; }
+        i += 2 + ((u(i + 2) << 8) | u(i + 3));
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+function sisipkanGambarKeSel_(cell, fotoUrl, namaUntukLog) {
   try {
     const fileId = ekstrakDriveFileId_(fotoUrl);
     if (!fileId) throw new Error("URL foto tidak dikenali.");
@@ -1268,65 +1552,170 @@ function sisipkanGambarKeSel_(cell, fotoUrl, namaUntukLog, lebarTarget) {
     const blob = DriveApp.getFileById(fileId).getBlob();
     const image = cell.appendImage(blob);
 
-    const lebarAsli = image.getWidth() || 1;
-    const tinggiAsli = image.getHeight() || 1;
-    const rasio = tinggiAsli / lebarAsli; // < 1 berarti landscape, >= 1 berarti portrait/square
+    // Rasio diambil dari data gambar itu sendiri; cadangan: ukuran yang dilaporkan Docs
+    const dim = ukuranGambarDariBlob_(blob);
+    const lebarAsli = (dim && dim.w) || image.getWidth() || 1;
+    const tinggiAsli = (dim && dim.h) || image.getHeight() || 1;
 
-    if (lebarTarget > 0) {
-      if (rasio <= 1.05) {
-        image.setWidth(lebarTarget);
-        image.setHeight(Math.round(lebarTarget * rasio));
-      } else {
-        // Foto Portrait: perbesar hingga lebar 135pt dengan batas tinggi maksimal 185pt agar proporsional & besar
-        let lebar = Math.min(lebarTarget, 135);
-        let tinggi = Math.round(lebar * rasio);
-        const tinggiMaks = 185;
-        if (tinggi > tinggiMaks) {
-          tinggi = tinggiMaks;
-          lebar = Math.max(95, Math.round(tinggi / rasio));
-        }
-        image.setWidth(lebar);
-        image.setHeight(tinggi);
-      }
-    }
+    // Foto diperbesar sampai selebar kolom (mentok garis kiri-kanan). Jika foto sangat tinggi (portrait),
+    // yang dibatasi adalah tingginya. Lebar dan tinggi SELALU diskalakan bersama, sehingga tidak gepeng.
+    const kotakLebarPx = FOTO_LEBAR_MAKS_PT * PX_PER_PT;
+    const kotakTinggiPx = FOTO_TINGGI_MAKS_PT * PX_PER_PT;
+    const skala = Math.min(kotakLebarPx / lebarAsli, kotakTinggiPx / tinggiAsli);
+    const lebar = Math.max(1, Math.round(lebarAsli * skala));
+    const tinggi = Math.max(1, Math.round(tinggiAsli * skala));
+
+    cell.setPaddingLeft(0).setPaddingRight(0).setPaddingTop(0).setPaddingBottom(0);
+
+    image.setWidth(lebar);
+    image.setHeight(tinggi);
+
+    // Bersihkan indentasi & jarak paragraf tempat gambar berada (tanpa sela putih di atas/bawah foto)
+    const p = image.getParent().asParagraph();
+    p.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+    p.setIndentFirstLine(0).setIndentStart(0).setIndentEnd(0);
+    p.setSpacingBefore(0).setSpacingAfter(0).setLineSpacing(1);
+    try {
+      // Ukuran huruf paragraf dikecilkan agar tidak ada ruang kosong di bawah gambar
+      p.setAttributes({ [DocumentApp.Attribute.FONT_SIZE]: 1 });
+    } catch (_) {}
   } catch (error) {
-    console.error("Gagal menyisipkan foto: " + (error.message || error));
+    catatDokumen_("Foto gagal dimasukkan (" + (namaUntukLog || "-") + "): " + (error.message || error));
     cell.appendParagraph("(Foto tidak tersedia)").editAsText().setFontFamily(FONT_DOKUMEN).setBold(false).setFontSize(9);
   }
 }
 
-function ambilBlobLogoResmi_(dataUri) {
+// Memastikan blob benar-benar gambar (PNG/JPEG/GIF) berdasarkan isi file, bukan sekadar status HTTP 200.
+function blobGambarValid_(blob) {
   try {
-    const matches = String(dataUri || "").match(/^data:(.+?);base64,(.+)$/);
-    if (matches) {
-      const bytes = Utilities.base64Decode(matches[2]);
-      return Utilities.newBlob(bytes, matches[1], "logo.png");
+    if (!blob) return null;
+    const b = blob.getBytes();
+    if (!b || b.length < 100) return null;
+    const u = (i) => b[i] & 0xff;
+    let tipe = "";
+    if (u(0) === 0x89 && u(1) === 0x50 && u(2) === 0x4e && u(3) === 0x47) tipe = "image/png";
+    else if (u(0) === 0xff && u(1) === 0xd8) tipe = "image/jpeg";
+    else if (u(0) === 0x47 && u(1) === 0x49 && u(2) === 0x46) tipe = "image/gif";
+    if (!tipe) {
+      try {
+        const png = blob.getAs("image/png");
+        const bp = png && png.getBytes();
+        if (bp && bp.length > 100 && (bp[0] & 0xff) === 0x89) {
+          return png.setContentType("image/png").setName("logo.png");
+        }
+      } catch (_) {}
+      return null;
     }
-  } catch (_) {}
+    return blob.setContentType(tipe).setName("logo." + (tipe === "image/png" ? "png" : tipe === "image/gif" ? "gif" : "jpg"));
+  } catch (_) {
+    return null;
+  }
+}
 
+function blobDariDataUri_(dataUri) {
   try {
-    const resp = UrlFetchApp.fetch(DEFAULT_LOGO_URL, { muteHttpExceptions: true });
-    if (resp.getResponseCode() === 200) {
-      return resp.getBlob().setName("logo.png");
+    const m = String(dataUri || "").match(/^data:(.+?);base64,([\s\S]+)$/);
+    if (!m) return null;
+    return blobGambarValid_(Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], "logo.png"));
+  } catch (_) {
+    return null;
+  }
+}
+
+function ambilLogoDariDrive_() {
+  try {
+    if (LOGO_DRIVE_FILE_ID && String(LOGO_DRIVE_FILE_ID).trim()) {
+      const b = blobGambarValid_(DriveApp.getFileById(String(LOGO_DRIVE_FILE_ID).trim()).getBlob());
+      if (b) return b;
     }
+    const files = getOrCreateFolder_("SIKERJA_WFH_ASET").getFilesByName("logo_resmi");
+    if (files.hasNext()) return blobGambarValid_(files.next().getBlob());
   } catch (e) {
-    console.warn("Gagal mengambil logo dari URL referensi: " + (e.message || e));
+    console.warn("Logo cadangan di Drive tidak dapat dibaca: " + (e.message || e));
   }
   return null;
 }
 
+function unduhLogoDariUrl_() {
+  const enc = encodeURIComponent(DEFAULT_LOGO_URL);
+  // Situs resmi membatasi akses otomatis, sehingga disediakan jalur cadangan lewat proxy gambar publik.
+  const daftarUrl = [
+    DEFAULT_LOGO_URL,
+    "https://wsrv.nl/?output=png&url=" + enc,
+    "https://images.weserv.nl/?output=png&url=" + enc,
+    "https://images1-focus-opensocial.googleusercontent.com/gadgets/proxy?container=focus&gadget=a&no_expand=1&rewriteMime=image/*&url=" + enc,
+  ];
+  const opsi = {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+      Accept: "image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
+      Referer: "https://kemenimipas.go.id/",
+    },
+  };
+  for (let i = 0; i < daftarUrl.length; i++) {
+    try {
+      const resp = UrlFetchApp.fetch(daftarUrl[i], opsi);
+      if (resp.getResponseCode() === 200) {
+        const b = blobGambarValid_(resp.getBlob());
+        if (b) return b;
+        console.warn("Jalur logo " + (i + 1) + ": respons bukan gambar valid.");
+      } else {
+        console.warn("Jalur logo " + (i + 1) + ": HTTP " + resp.getResponseCode());
+      }
+    } catch (e) {
+      console.warn("Jalur logo " + (i + 1) + " gagal: " + (e.message || e));
+    }
+  }
+  return null;
+}
+
+// Urutan: (1) file logo di Google Drive, (2) gambar kiriman browser, (3) unduh dari URL resmi/proxy lalu simpan ke Drive.
+function ambilBlobLogoResmi_(dataUri) {
+  const dariDrive = ambilLogoDariDrive_();
+  if (dariDrive) return dariDrive;
+
+  const dariBrowser = blobDariDataUri_(dataUri);
+  if (dariBrowser) return dariBrowser;
+
+  const dariUrl = unduhLogoDariUrl_();
+  if (dariUrl) {
+    try {
+      const folder = getOrCreateFolder_("SIKERJA_WFH_ASET");
+      if (!folder.getFilesByName("logo_resmi").hasNext()) {
+        folder.createFile(dariUrl.copyBlob().setName("logo_resmi"));
+      }
+    } catch (e) {
+      console.warn("Logo tidak dapat disimpan ke Drive: " + (e.message || e));
+    }
+    return dariUrl;
+  }
+  return null;
+}
+
+// Mengembalikan true bila logo berhasil dimasukkan.
 function sisipkanLogoKeSel_(cell, dataUri) {
   try {
     const blob = ambilBlobLogoResmi_(dataUri);
-    if (!blob) return;
+    if (!blob) {
+      console.error("Logo tidak tersedia dari browser, Drive, maupun URL resmi.");
+      return false;
+    }
     const image = cell.appendImage(blob);
 
-    const lebarAsli = image.getWidth() || 1;
-    const tinggiAsli = image.getHeight() || 1;
-    const rasio = lebarAsli > 0 ? tinggiAsli / lebarAsli : 1;
-    image.setWidth(72);
-    image.setHeight(Math.round(rasio * 72));
-  } catch (_) {}
+    const dim = ukuranGambarDariBlob_(blob);
+    const lebarAsli = (dim && dim.w) || image.getWidth() || 1;
+    const tinggiAsli = (dim && dim.h) || image.getHeight() || 1;
+    const rasio = tinggiAsli / lebarAsli;
+    const lebarLogoPx = Math.round(72 * PX_PER_PT); // lebar logo 72 pt
+    image.setWidth(lebarLogoPx);
+    image.setHeight(Math.round(rasio * lebarLogoPx));
+    return true;
+  } catch (error) {
+    console.error("Gagal menyisipkan logo: " + (error.message || error));
+    return false;
+  }
 }
 
 function ekstrakDriveFileId_(url) {
@@ -1384,9 +1773,10 @@ function readPresensi_(sheet) {
   if (!sheet || sheet.getLastRow() < 2) return [];
   const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 11).getDisplayValues();
 
+  // Nomor baris dihitung SEBELUM baris kosong dibuang, agar PRES_ROW_n selalu menunjuk baris sheet yang benar.
   return rows
-    .filter((r) => r.some((v) => String(v).trim() !== ""))
     .map((r, idx) => {
+      if (!r.some((v) => String(v).trim() !== "")) return null;
       const timestamp = String(r[0]).trim();
       const waktu = timestamp.includes(" ") ? timestamp.split(" ")[1] : timestamp;
       return {
@@ -1405,6 +1795,7 @@ function readPresensi_(sheet) {
         foto: String(r[10]).trim(),
       };
     })
+    .filter(Boolean)
     .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
 }
 
@@ -1419,4 +1810,52 @@ function makeId_(prefix) {
 function normalizeId_(value) {
   const s = String(value == null ? "" : value).trim();
   return /^\d+\.0+$/.test(s) ? s.replace(/\.0+$/, "") : s;
+}
+
+// Cadangan terakhir: Google Docs sendiri yang mengambil gambar dari URL logo resmi (tanpa melewati UrlFetchApp).
+function sisipkanLogoViaDocsApi_(docId) {
+  try {
+    const dokumen = Docs.Documents.get(docId);
+    const content = (dokumen.body && dokumen.body.content) || [];
+    for (let i = 0; i < content.length; i++) {
+      const tabel = content[i].table;
+      if (!tabel) continue;
+      const sel = tabel.tableRows[0].tableCells[0];
+      const para = sel.content[0];
+      Docs.Documents.batchUpdate(
+        {
+          requests: [
+            {
+              updateParagraphStyle: {
+                range: { startIndex: para.startIndex, endIndex: para.endIndex },
+                paragraphStyle: { alignment: "CENTER" },
+                fields: "alignment",
+              },
+            },
+            {
+              insertInlineImage: {
+                location: { index: para.startIndex },
+                uri: DEFAULT_LOGO_URL,
+                objectSize: { width: { magnitude: 72, unit: "PT" } },
+              },
+            },
+          ],
+        },
+        docId
+      );
+      return true;
+    }
+  } catch (error) {
+    console.error("Logo via Docs API gagal: " + (error.message || error));
+  }
+  return false;
+}
+
+// Jalankan manual dari editor Apps Script (pilih fungsi ini lalu Run, buka Execution log)
+// untuk melihat jalur logo mana yang berhasil.
+function diagnosaLogo() {
+  const dariDrive = ambilLogoDariDrive_();
+  Logger.log("Logo dari Drive (" + LOGO_DRIVE_FILE_ID + "): " + (dariDrive ? "BERHASIL (" + dariDrive.getBytes().length + " byte, " + dariDrive.getContentType() + ")" : "GAGAL - cek ID file / format gambar"));
+  Logger.log("Docs API aktif: " + (typeof Docs !== "undefined" && !!Docs.Documents));
+  Logger.log("Hasil akhir: " + (ambilBlobLogoResmi_("") ? "logo tersedia" : "logo TIDAK tersedia -> isi LOGO_DRIVE_FILE_ID"));
 }
