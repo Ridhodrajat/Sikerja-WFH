@@ -1192,15 +1192,19 @@
         // 7. STATISTIK, MONITORING, DAN FITUR WA / REKAP PIMPINAN
         function updateStatsAndMonitoring() {
             const presPeg = APP_STATE.presensiHariIni.filter(p => p.kategori === "Pegawai");
-            const hadir = presPeg.filter(p => p.status === "Hadir WFH").length;
-            const cuti = presPeg.filter(p => p.status === "Cuti").length;
-            const dinas = presPeg.filter(p => p.status === "Dinas Luar").length;
+            const presMag = APP_STATE.presensiHariIni.filter(p => p.kategori === "Magang");
+            const semuaPresensi = presPeg.concat(presMag);
+            const hadir = semuaPresensi.filter(p => p.status === "Hadir WFH").length;
+            const cuti = semuaPresensi.filter(p => p.status === "Cuti").length;
+            const dinas = semuaPresensi.filter(p => p.status === "Dinas Luar").length;
             const belumPeg = APP_STATE.pegawai.filter(u => !apakahSudahPresensiHariIni_(u, "Pegawai"));
+            const belumMag = APP_STATE.magang.filter(m => !apakahSudahPresensiHariIni_(m, "Magang"));
+            const belumSemua = belumPeg.concat(belumMag);
 
             document.getElementById("statHadir").textContent = hadir;
             document.getElementById("statCuti").textContent = cuti;
             document.getElementById("statDinas").textContent = dinas;
-            document.getElementById("statBelum").textContent = belumPeg.length;
+            document.getElementById("statBelum").textContent = belumSemua.length;
 
             const tbodyHadir = document.getElementById("tbodyHadir");
             document.getElementById("countHadir").textContent = APP_STATE.presensiHariIni.length;
@@ -1220,16 +1224,16 @@
                 `).join("");
             }
 
-            document.getElementById("countBelum").textContent = belumPeg.length;
+            document.getElementById("countBelum").textContent = belumSemua.length;
             const tbodyBelum = document.getElementById("tbodyBelum");
-            tbodyBelum.innerHTML = belumPeg.length ? belumPeg.map(u => `
+            tbodyBelum.innerHTML = belumSemua.length ? belumSemua.map(u => `
                 <tr>
-                    <td class="font-mono text-xs">${u.nip}</td>
-                    <td class="font-bold">${u.nama}</td>
-                    <td class="text-xs">${u.golongan}</td>
-                    <td class="text-xs">${u.jabatan}</td>
+                    <td class="font-mono text-xs">${escHtml_(u.nip || u.nim || "-")}</td>
+                    <td class="font-bold">${escHtml_(u.nama)}</td>
+                    <td class="text-xs">${escHtml_(u.golongan || u.instansi || "-")}</td>
+                    <td class="text-xs">${escHtml_(u.jabatan || u.posisi || "-")}</td>
                 </tr>
-            `).join("") : '<tr><td colspan="4" class="p-4 text-center text-emerald-600 font-bold">Seluruh pegawai sudah tercatat!</td></tr>';
+            `).join("") : '<tr><td colspan="4" class="p-4 text-center text-emerald-600 font-bold">Seluruh anggota sudah tercatat!</td></tr>';
 
             const tbodyAdmin = document.getElementById("tbodyAdminStatus");
             tbodyAdmin.innerHTML = APP_STATE.pegawai.map(u => {
